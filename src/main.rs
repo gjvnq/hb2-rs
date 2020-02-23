@@ -116,21 +116,47 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: 
             lsattr2str(path.flags().unwrap())).unwrap();
 
         if path.is_dir() {
+            // Recursion time!
             writeln!(list, "D {} {} {}", mod_date, perm, path_striped).unwrap();
             do_backup(base_source, &path, storage, alg, list, n_errs);
         } else {
-            let mut file = fs::File::open(&path).unwrap();
+            //  Hash file
+            let mut file = match fs::File::open(&path) {
+                Ok(v) => v,
+                Err(err) => {
+                    error!("Failed to open file {}: {}", path_striped, err);
+                    *n_errs += 1;
+                    continue;
+                }
+            };
             let md = MessageDigest::from_nid(alg).unwrap();
             let mut hasher = Hasher::new(md).unwrap();
-            let n = io::copy(&mut file, &mut hasher).unwrap();
+            let n = match io::copy(&mut file, &mut hasher) {
+                Ok(v) => v,
+                Err(err) => {
+                    error!("Failed hash file {}: {}", path_striped, err);
+                    *n_errs += 1;
+                    continue;
+                }
+            };
             let hash = hex::encode(hasher.finish().unwrap());
 
+            // Check size and consistency
             let size = metadata.len();
             if size != n {
                 *n_errs += 1;
                 error!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
                 continue;
             }
+
+            // Check if backuped file already exists
+            /*if path_backup.exists() {
+                // check size
+            } else {
+                // copy file
+            }*/
+
+            // Write and finish
             writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, hash, path_striped).unwrap();
         }
     }
