@@ -9,8 +9,9 @@ use chrono::{Utc, DateTime, SecondsFormat};
 extern crate env_logger;
 use snailquote::escape;
 use std::os::linux::fs::MetadataExt;
-
-
+extern crate sha2;
+use sha2::{Sha256, Digest};
+use std::io;
 
 
 
@@ -22,10 +23,6 @@ mod log_hack;
 fn main() {
     log_hack::start_logger();
     debug!("started log");
-    info!("such information");
-    warn!("o_O");
-    error!("boom1");
-
 
     let matches = clap::App::new("Hash Based Backup tool")
         .version("0.1.0")
@@ -53,13 +50,9 @@ fn main() {
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
     let alg = matches.value_of("alg").unwrap();
 
-    info!("such information");
-    warn!("o_O");
-    error!("boom");
-
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(source_path, source_path, storage_path, alg, &mut list, &mut n_errs);
+    do_backup::<Sha256>(source_path, source_path, storage_path, &mut list, &mut n_errs);
     finish_backup(list);
 
     if n_errs != 0 {
@@ -97,7 +90,9 @@ fn lsattr2str(flags: Flags) -> String {
     return ans
 }
 
-fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: &str, list: &mut File, n_errs: &mut i32) {
+fn do_backup<D: Digest>(base_source: &Path, source: &Path, storage: &Path, list: &mut File, n_errs: &mut i32)
+    // Don't ask what the next line means. If I remove it I get a compilation error. (See https://github.com/RustCrypto/hashes/issues/102)
+    where <D as sha2::Digest>::OutputSize: std::ops::Add, <<D as sha2::Digest>::OutputSize as std::ops::Add>::Output: sha2::digest::generic_array::ArrayLength<u8>, D: std::io::Write   {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -112,6 +107,8 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: &str, list:
         let entry = entry.unwrap();
         let path = entry.path();
         let path_striped = escape(path.strip_prefix(base_source).unwrap().to_str().unwrap());
+        debug!("Processing {}", path_striped);
+
         let metadata = fs::metadata(entry.path()).unwrap();
         let mod_date = DateTime::<Utc>::from(metadata.modified().unwrap()).to_rfc3339_opts(SecondsFormat::Millis, true);
         let mut perm = String::new();
@@ -122,13 +119,21 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: &str, list:
             lsattr2str(path.flags().unwrap())).unwrap();
 
         if path.is_dir() {
-            debug!("D {} {} {}", mod_date, perm, path_striped);
             writeln!(list, "D {} {} {}", mod_date, perm, path_striped).unwrap();
-            do_backup(base_source, &path, storage, alg, list, n_errs);
+            do_backup::<D>(base_source, &path, storage, list, n_errs);
         } else {
+            let mut file = fs::File::open(&path).unwrap();
+            let mut hasher = D::new();
+            let n = io::copy(&mut file, &mut hasher).unwrap();
+            let hash = hasher.result();
+
             let size = metadata.len();
-            debug!("F {:12} {} {} {} {}", size, mod_date, perm, "hash", path_striped);
-            writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, "hash", path_striped).unwrap();
+            if size != n {
+                *n_errs += 1;
+                error!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
+                continue;
+            }
+            writeln!(list, "F {:12} {} {} {:x} {}", size, mod_date, perm, hash, path_striped).unwrap();
         }
     }
     trace!("end {:?}", source);
