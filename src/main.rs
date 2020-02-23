@@ -9,10 +9,9 @@ use chrono::{Utc, DateTime, SecondsFormat};
 extern crate env_logger;
 use snailquote::escape;
 use std::os::linux::fs::MetadataExt;
-extern crate sha2;
-use sha2::{Sha256, Digest};
 use std::io;
-
+use openssl::nid::Nid;
+use openssl::hash::{Hasher, MessageDigest};
 
 
 
@@ -52,7 +51,7 @@ fn main() {
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup::<Sha256>(source_path, source_path, storage_path, &mut list, &mut n_errs);
+    do_backup(source_path, source_path, storage_path, Nid::SHA256, &mut list, &mut n_errs);
     finish_backup(list);
 
     if n_errs != 0 {
@@ -90,9 +89,7 @@ fn lsattr2str(flags: Flags) -> String {
     return ans
 }
 
-fn do_backup<D: Digest>(base_source: &Path, source: &Path, storage: &Path, list: &mut File, n_errs: &mut i32)
-    // Don't ask what the next line means. If I remove it I get a compilation error. (See https://github.com/RustCrypto/hashes/issues/102)
-    where <D as sha2::Digest>::OutputSize: std::ops::Add, <<D as sha2::Digest>::OutputSize as std::ops::Add>::Output: sha2::digest::generic_array::ArrayLength<u8>, D: std::io::Write   {
+fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: &mut File, n_errs: &mut i32) {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -120,12 +117,13 @@ fn do_backup<D: Digest>(base_source: &Path, source: &Path, storage: &Path, list:
 
         if path.is_dir() {
             writeln!(list, "D {} {} {}", mod_date, perm, path_striped).unwrap();
-            do_backup::<D>(base_source, &path, storage, list, n_errs);
+            do_backup(base_source, &path, storage, alg, list, n_errs);
         } else {
             let mut file = fs::File::open(&path).unwrap();
-            let mut hasher = D::new();
+            let md = MessageDigest::from_nid(alg).unwrap();
+            let mut hasher = Hasher::new(md).unwrap();
             let n = io::copy(&mut file, &mut hasher).unwrap();
-            let hash = hasher.result();
+            let hash = hex::encode(hasher.finish().unwrap());
 
             let size = metadata.len();
             if size != n {
@@ -133,7 +131,7 @@ fn do_backup<D: Digest>(base_source: &Path, source: &Path, storage: &Path, list:
                 error!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
                 continue;
             }
-            writeln!(list, "F {:12} {} {} {:x} {}", size, mod_date, perm, hash, path_striped).unwrap();
+            writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, hash, path_striped).unwrap();
         }
     }
     trace!("end {:?}", source);

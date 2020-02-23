@@ -9,9 +9,10 @@ description = "A simple tool for backing up documents based on their hashes"
 
 [dependencies]
 log = "0.4"
-sha2 = "0.8"
+hex = "0.4"
 clap = "~2.33"
 chrono = "0.4"
+openssl = "0.10.28"
 env_logger = "0.7"
 snailquote = "0.3"
 e2p-fileflags = { version= "0.1.0", git = "https://github.com/michaellass/e2p-fileflags.git" }
