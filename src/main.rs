@@ -1,9 +1,19 @@
 extern crate clap;
+use std::io::Write as IoWriter;
 use std::fs::File;
+use std::fmt::Write as FmtWritter;
 use std::path::Path;
-use std::io::prelude::*;
-use chrono::{Utc};
+use std::fs;
+use e2p_fileflags::{FileFlags,Flags};
+use chrono::{Utc, DateTime, SecondsFormat};
 extern crate env_logger;
+use snailquote::escape;
+use std::os::linux::fs::MetadataExt;
+
+
+
+
+
 
 #[macro_use] extern crate log;
 
@@ -47,18 +57,83 @@ fn main() {
     warn!("o_O");
     error!("boom");
 
-    start_backup(source_path, storage_path);
+    let mut n_errs = 0;
+    let mut list = start_backup(source_path, storage_path, alg).unwrap();
+    do_backup(source_path, source_path, storage_path, alg, &mut list, &mut n_errs);
+    finish_backup(list);
+
+    if n_errs != 0 {
+        error!("Total errors: {}", n_errs);
+    }
 }
 
-fn start_backup(source: &Path, storage: &Path) -> Result<i32, std::io::Error> {
+fn start_backup(source: &Path, storage: &Path, alg: &str) -> Result<File, std::io::Error> {
     trace!("start_backup");
     let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-
-    // let file = OpenOptions::new().read(true).open("foo.txt");
+    debug!("Considering now as {}", now_str);
     let list_path = storage.clone().join(now_str+".txt");
-    let mut list = File::create(&list_path).expect("Failed to create list file");
-    list.write_all(source.to_str().unwrap().as_bytes())?;
-    // let mut list = match File::create(&list_path);
+    debug!("Backup list path: {:?}", list_path);
 
-    Ok(0)
+    let mut list = File::create(&list_path)?;
+    trace!("Created file {:?}", list_path);
+    writeln!(list, "# SOURCE: {}", source.to_str().unwrap())?;
+    writeln!(list, "# HASH:   {}", alg)?;
+    list.sync_all()?;
+
+    Ok(list)
+}
+
+
+fn lsattr2str(flags: Flags) -> String {
+    let mut ans = String::new();
+    let flag_chars = [(Flags::SECRM, "s"), (Flags::UNRM, "u" ), (Flags::SYNC, "S"), (Flags::DIRSYNC, "D"), (Flags::IMMUTABLE, "i"), (Flags::APPEND, "a"), (Flags::NODUMP, "d"), (Flags::NOATIME, "A"), (Flags::COMPR, "c"), (Flags::ENCRYPT, "E"), (Flags::JOURNAL_DATA, "j"), (Flags::INDEX, "I"), (Flags::NOTAIL, "t"), (Flags::TOPDIR, "T"), (Flags::EXTENTS, "e"), (Flags::NOCOW, "C"), (Flags::CASEFOLD, "F"), (Flags::INLINE_DATA, "N"), (Flags::PROJINHERIT, "P"), (Flags::VERITY, "V")];
+    for pair in &flag_chars {
+        if flags.contains(pair.0) {
+            ans.push_str(pair.1);
+        } else {
+            ans.push_str("-");
+        }
+    }
+    return ans
+}
+
+fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: &str, list: &mut File, n_errs: &mut i32) {
+    trace!("on  {:?}", source);
+    let entries = match fs::read_dir(source) {
+        Ok(e) => e,
+        Err(err) => {
+            error!("{}", err);
+            *n_errs += 1;
+            trace!("end {:?}", source);
+            return
+        }
+    };
+    for entry in entries {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let path_striped = escape(path.strip_prefix(base_source).unwrap().to_str().unwrap());
+        let metadata = fs::metadata(entry.path()).unwrap();
+        let mod_date = DateTime::<Utc>::from(metadata.modified().unwrap()).to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut perm = String::new();
+        write!(perm, "{}:{} {:o} {}",
+            metadata.st_uid(),
+            metadata.st_gid(),
+            metadata.st_mode(),
+            lsattr2str(path.flags().unwrap())).unwrap();
+
+        if path.is_dir() {
+            debug!("D {} {} {}", mod_date, perm, path_striped);
+            writeln!(list, "D {} {} {}", mod_date, perm, path_striped).unwrap();
+            do_backup(base_source, &path, storage, alg, list, n_errs);
+        } else {
+            let size = metadata.len();
+            debug!("F {:12} {} {} {} {}", size, mod_date, perm, "hash", path_striped);
+            writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, "hash", path_striped).unwrap();
+        }
+    }
+    trace!("end {:?}", source);
+}
+
+fn finish_backup(list: File) {
+    list.sync_data().unwrap();
 }
