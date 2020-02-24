@@ -1,6 +1,6 @@
 extern crate log;
 
-use env_logger::{Env, Builder, fmt::{Color, Style, StyledValue}};
+use env_logger::{Env, Builder, WriteStyle, fmt::{Color, Style, StyledValue}};
 use log::Level;
 use chrono::Local;
 use std::fmt::Write as FmtWrite;
@@ -16,10 +16,18 @@ pub fn colored_level<'a>(style: &'a mut Style, level: Level) -> StyledValue<'a, 
     }
 }
 
-pub fn start_logger() {
-    let env = Env::new().filter_or("HB2_LOG", "info");
+pub fn start_logger(force_color: bool, debug: bool) {
+    let mut env = Env::new();
+    if debug {
+        env = env.filter_or("HB2_LOG", "debug");
+    } else {
+        env = env.filter_or("HB2_LOG", "info");
+    }
 
     let mut builder = Builder::from_env(env);
+    if force_color {
+        builder.write_style(WriteStyle::Always);
+    }
     builder.format(|final_buf, record| {
 
         let mut style = final_buf.style();

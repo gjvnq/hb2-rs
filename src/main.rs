@@ -27,8 +27,6 @@ mod log_hack;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
-    log_hack::start_logger();
-    debug!("started log");
 
     let matches = clap::App::new("Hash Based Backup tool")
         .version("0.2.0")
@@ -48,8 +46,22 @@ fn main() {
             .long("alg")
             .possible_values(&["SHA256"])
             .help("Selects the hash algorithm"))
+        .arg(clap::Arg::with_name("force-color")
+            .long("force-color")
+            .takes_value(false)
+            .hide_default_value(true)
+            .help("Forces the use of colours even when STDOUT is redirected"))
+        .arg(clap::Arg::with_name("debug")
+            .long("debug")
+            .takes_value(false)
+            .hide_default_value(true))
         .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
         .get_matches();
+
+    let force_color = matches.is_present("force-color");
+    let debug = matches.is_present("debug");
+    log_hack::start_logger(force_color, debug);
+    debug!("started log");
 
     let source_path = Path::new(matches.value_of("SOURCE").unwrap());
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
