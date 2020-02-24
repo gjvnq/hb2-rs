@@ -1,4 +1,8 @@
+#[macro_use]
+extern crate simple_error;
+
 extern crate clap;
+use std::error::Error;
 use std::path::PathBuf;
 use std::io::Write as IoWriter;
 use std::fs::File;
@@ -11,6 +15,7 @@ extern crate env_logger;
 use snailquote::escape;
 use std::os::linux::fs::MetadataExt;
 use std::io;
+use std::env;
 use openssl::nid::Nid;
 use openssl::hash::{Hasher, MessageDigest};
 
@@ -21,11 +26,12 @@ use openssl::hash::{Hasher, MessageDigest};
 mod log_hack;
 
 fn main() {
+    env::set_var("RUST_BACKTRACE", "1");
     log_hack::start_logger();
     debug!("started log");
 
     let matches = clap::App::new("Hash Based Backup tool")
-        .version("0.1.0")
+        .version("0.2.0")
         .author("G. Queiroz <gabrieljvnq@gmail.com>")
         .about("Simple hash based backup tool")
         .arg(clap::Arg::with_name("SOURCE")
@@ -60,7 +66,7 @@ fn main() {
 }
 
 fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io::Error> {
-    trace!("start_backup");
+    trace!("start_backup - begin");
     let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     debug!("Considering now as {}", now_str);
     let list_path = storage.clone().join(now_str+".txt");
@@ -85,6 +91,7 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
         };
     }
 
+    trace!("start_backup - end");
     Ok(list)
 }
 
@@ -114,34 +121,35 @@ fn get_backup_path_by_hash(storage: &Path, alg: Nid, hash: &str) -> PathBuf {
     return ans
 }
 
-fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid, list: &mut File, metadata: fs::Metadata, mod_date: &str, perm: &str, n_errs: &mut i32) {
+fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid, list: &mut File, metadata: fs::Metadata, mod_date: &str, perm: &str, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
     //  Hash file
     let mut file = match fs::File::open(&path) {
         Ok(v) => v,
         Err(err) => {
             error!("Failed to open file {}: {}", path_striped, err);
             *n_errs += 1;
-            return;
+            return Err(Box::new(err));
         }
     };
     let md = MessageDigest::from_nid(alg).unwrap();
-    let mut hasher = Hasher::new(md).unwrap();
+    let mut hasher = Hasher::new(md)?;
     let n = match io::copy(&mut file, &mut hasher) {
         Ok(v) => v,
         Err(err) => {
             error!("Failed hash file {}: {}", path_striped, err);
             *n_errs += 1;
-            return;
+            return Err(Box::new(err));
         }
     };
-    let hash = hex::encode(hasher.finish().unwrap());
+    let hash = hex::encode(hasher.finish()?);
 
     // Check size and consistency
     let size = metadata.len();
     if size != n {
         *n_errs += 1;
-        error!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
-        return;
+        let tmp = format!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
+        error!("{}", tmp);
+        bail!(tmp)
     }
 
     // Check if backuped file already exists
@@ -155,7 +163,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
             Err(err) => {
                 *n_errs += 1;
                 error!("Failed to get metadata for {:?}: {}", path_backup, err);
-                return;
+                return Err(Box::new(err));
             }
         };
         let backuped_size = metadata.len();
@@ -182,7 +190,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
                 Err(err) => {
                     *n_errs += 1;
                     error!("Failed to create directory {:?}: {}", path_backup_parent, err);
-                    return;
+                    return Err(Box::new(err));
                 }
             };
         }
@@ -192,13 +200,73 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
             Err(err) => {
                 error!("Failed to copy file {:?} to {:?}: {}", path, path_backup, err);
                 *n_errs += 1;
-                return;
+                return Err(Box::new(err));
             }
         };
     }
 
     // Write
-    writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, hash, path_striped).unwrap();
+    writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, hash, path_striped)?;
+
+    return Ok(());
+}
+
+fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, list: &mut File, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
+    let path_striped = escape(item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap());
+    debug!("Processing {}", path_striped);
+
+    let metadata = match fs::symlink_metadata(item_path) {
+        Ok(v) => v,
+        Err(err) => {
+            error!("Failed to get metadata for {}: {}", path_striped, err);
+            return Err(Box::new(err))
+        }
+    };
+    let mod_date = DateTime::<Utc>::from(metadata.modified()?).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut perm = String::new();
+    let lsattr = match item_path.flags() {
+        Ok(a) => lsattr2str(a),
+        Err(err) => {
+            warn!("Failed to get lsattr for {}: {}", path_striped, err);
+            "????????????????????"
+        }.to_string()
+    };
+    write!(perm, "{}:{} {:o} {}",
+        metadata.st_uid(),
+        metadata.st_gid(),
+        metadata.st_mode(),
+        lsattr)?;
+
+    if metadata.file_type().is_symlink() {
+        debug!("{} is a link", path_striped);
+        let target_path = match item_path.read_link() {
+            Ok(v) => v,
+            Err(err) => {
+                error!("Failed to read {:?} as a symlink: {}", item_path, err);
+                return Err(Box::new(err))
+            }
+        };
+         if target_path.starts_with(base_source) {
+            // If the link targets something inside the base_source, just record the link and don't even read the file as the target will be found separately.
+            let target_path_striped = escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
+            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, target_path_striped)?;
+        } else {
+            info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_striped, target_path);
+            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, escape(target_path.to_str().unwrap()))?;
+            do_item(base_source, storage, &target_path, alg, list, n_errs)?;
+        }
+    } else if metadata.file_type().is_dir() {
+        // Recursion time!
+        debug!("{} is a directory", path_striped);
+        writeln!(list, "D {} {} {}", mod_date, perm, path_striped)?;
+        do_backup(base_source, &item_path, storage, alg, list, n_errs);
+    } else if metadata.file_type().is_file() {
+        debug!("{} is a file", path_striped);
+        backup_single_file(&item_path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs)?;
+    } else {
+        unimplemented!("File type {:?} is not supported", metadata.file_type());
+    }
+    return Ok(());
 }
 
 fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: &mut File, n_errs: &mut i32) {
@@ -214,26 +282,14 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: 
     };
     for entry in entries {
         let entry = entry.unwrap();
-        let path = entry.path();
-        let path_striped = escape(path.strip_prefix(base_source).unwrap().to_str().unwrap());
-        debug!("Processing {}", path_striped);
-
-        let metadata = fs::metadata(entry.path()).unwrap();
-        let mod_date = DateTime::<Utc>::from(metadata.modified().unwrap()).to_rfc3339_opts(SecondsFormat::Millis, true);
-        let mut perm = String::new();
-        write!(perm, "{}:{} {:o} {}",
-            metadata.st_uid(),
-            metadata.st_gid(),
-            metadata.st_mode(),
-            lsattr2str(path.flags().unwrap())).unwrap();
-
-        if path.is_dir() {
-            // Recursion time!
-            writeln!(list, "D {} {} {}", mod_date, perm, path_striped).unwrap();
-            do_backup(base_source, &path, storage, alg, list, n_errs);
-        } else {
-            backup_single_file(&path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs);
-        }
+        let item_path = entry.path();
+        match do_item(base_source, storage, &item_path, alg, list, n_errs) {
+            Err(err) => {
+                *n_errs += 1;
+                error!("Unexpected error on {:?}: {}", item_path, err);
+            }
+            Ok(_) => {}
+        };
     }
     trace!("end {:?}", source);
 }
