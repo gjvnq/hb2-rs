@@ -1,6 +1,7 @@
 [package]
 name = "hb2"
-version = "0.2.0"
+build = "build.rs"
+version = "0.3.0-dev"
 authors = ["G Queiroz <gabrieljvnq@gmail.com>"]
 edition = "2018"
 description = "A simple tool for backing up documents based on their hashes"
@@ -10,14 +11,19 @@ description = "A simple tool for backing up documents based on their hashes"
 [dependencies]
 log = "0.4"
 hex = "0.4"
-clap = "~2.33"
+clap = { version = "~3.2", features = ["cargo"] }
 chrono = "0.4"
 openssl = "0.10.28"
+rusqlite = { version = "0.28.0", features = ["bundled"] }
 env_logger = "0.7"
 snailquote = "0.3"
 simple-error = "0.2"
 e2p-fileflags = { version= "0.1.0", git = "https://github.com/michaellass/e2p-fileflags.git" }
 # pretty_env_logger = "0.4"
+
+[build-dependencies]
+anyhow = "1.0"
+vergen = { version = "7.3", default-features = false, features = ["build", "rustc", "git"] }
 
 [profile.release]
 debug = true

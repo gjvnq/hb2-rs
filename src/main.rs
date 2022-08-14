@@ -25,17 +25,44 @@ use openssl::hash::{Hasher, MessageDigest};
 
 mod log_hack;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+const DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+
+const BUILD_TIMESTAMP: &str = env!("VERGEN_BUILD_TIMESTAMP");
+const BUILD_SEMVER: &str = env!("VERGEN_BUILD_SEMVER");
+const GIT_BRANCH: &str = env!("VERGEN_GIT_BRANCH");
+const GIT_COMMIT_TIMESTAMP: &str = env!("VERGEN_GIT_COMMIT_TIMESTAMP");
+const GIT_SEMVER: &str = env!("VERGEN_GIT_SEMVER");
+const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
+const RUSTC_CHANNEL: &str = env!("VERGEN_RUSTC_CHANNEL");
+const RUSTC_HOST_TRIPLE: &str = env!("VERGEN_RUSTC_HOST_TRIPLE");
+const RUSTC_COMMIT_HASH: &str = env!("VERGEN_RUSTC_COMMIT_HASH");
+const RUSTC_SEMVER: &str = env!("VERGEN_RUSTC_SEMVER");
+const RUSTC_LLVM_VERSION: &str = env!("VERGEN_RUSTC_LLVM_VERSION");
+
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
 
+    let long_version: String = format!("\nVersion: {VERSION}\nBuild info: {BUILD_SEMVER} built at {BUILD_TIMESTAMP}\nGit info: {GIT_SEMVER} from commit {GIT_SHA} date {GIT_COMMIT_TIMESTAMP} at branch {GIT_BRANCH}\nRustc info: {RUSTC_CHANNEL} {RUSTC_SEMVER} {RUSTC_HOST_TRIPLE} with LLVM {RUSTC_LLVM_VERSION} (rustc commit {RUSTC_COMMIT_HASH})");
+
     let matches = clap::App::new("Hash Based Backup tool")
-        .version("0.2.0")
-        .author("G. Queiroz <gabrieljvnq@gmail.com>")
-        .about("Simple hash based backup tool")
+        .version(VERSION)
+        .long_version(long_version.as_str())
+        .author(AUTHORS)
+        .about(DESCRIPTION)
         .arg(clap::Arg::with_name("SOURCE")
             .help("Path to backup")
             .required(true)
             .index(1))
+        .arg(clap::Arg::with_name("name")
+            .help("Name of the backup. Defaults to the basename of SOURCE.")
+            .takes_value(true)
+            .long("name"))
+        .arg(clap::Arg::with_name("description")
+            .help("Description of the backup.")
+            .takes_value(true)
+            .long("desc"))
         .arg(clap::Arg::with_name("STORAGE")
             .help("Where to save the backups")
             .required(true)
@@ -49,17 +76,17 @@ fn main() {
         .arg(clap::Arg::with_name("force-color")
             .long("force-color")
             .takes_value(false)
-            .hide_default_value(true)
             .help("Forces the use of colours even when STDOUT is redirected"))
         .arg(clap::Arg::with_name("debug")
             .long("debug")
             .takes_value(false)
-            .hide_default_value(true))
+            .help("Prints additional debugging info"))
+            // .hide_default_value(true)
         .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
         .get_matches();
 
-    let force_color = matches.is_present("force-color");
-    let debug = matches.is_present("debug");
+        let force_color = matches.is_present("force-color");
+        let debug = matches.is_present("debug");
     log_hack::start_logger(force_color, debug);
     debug!("started log");
 
