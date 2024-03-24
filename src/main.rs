@@ -82,12 +82,17 @@ fn main() {
             .long("debug")
             .takes_value(false)
             .help("Prints additional debugging info"))
+        .arg(clap::Arg::with_name("no-file-flags")
+            .long("no-file-flags")
+            .takes_value(false)
+            .help("If present, hb2-rs won't even attempt to get the file flags"))
             // .hide_default_value(true)
         .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
         .get_matches();
 
-        let force_color = matches.is_present("force-color");
-        let debug = matches.is_present("debug");
+    let force_color = matches.is_present("force-color");
+    let debug = matches.is_present("debug");
+    let file_flags = !matches.is_present("no-file-flags");
     log_hack::start_logger(force_color, debug);
     debug!("started log");
 
@@ -99,7 +104,7 @@ fn main() {
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(source_path, source_path, storage_path, alg, &mut list, &mut n_errs);
+    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs);
     finish_backup(list);
 
     if n_errs != 0 {
@@ -253,7 +258,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
     return Ok(());
 }
 
-fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, list: &mut File, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
+fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
     let path_striped = escape(item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap());
     debug!("Processing {}", path_striped);
 
@@ -266,12 +271,15 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, list:
     };
     let mod_date = DateTime::<Utc>::from(metadata.modified()?).to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut perm = String::new();
-    let lsattr = match item_path.flags() {
-        Ok(a) => lsattr2str(a),
-        Err(err) => {
-            warn!("Failed to get lsattr for {}: {}", path_striped, err);
-            "????????????????????"
-        }.to_string()
+    let lsattr: String = match file_flags {
+        true => match item_path.flags() {
+            Ok(flags) => lsattr2str(flags),
+            Err(err) => {
+                warn!("Failed to get lsattr for {}: {}", path_striped, err);
+                "????????????????????".to_string()
+            },
+        },
+        false => "????????????????????".to_string()
     };
     write!(perm, "{}:{} {:o} {}",
         metadata.st_uid(),
@@ -295,13 +303,13 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, list:
         } else {
             info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_striped, target_path);
             writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, escape(target_path.to_str().unwrap()))?;
-            do_item(base_source, storage, &target_path, alg, list, n_errs)?;
+            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs)?;
         }
     } else if metadata.file_type().is_dir() {
         // Recursion time!
         debug!("{} is a directory", path_striped);
         writeln!(list, "D {} {} {}", mod_date, perm, path_striped)?;
-        do_backup(base_source, &item_path, storage, alg, list, n_errs);
+        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs);
     } else if metadata.file_type().is_file() {
         debug!("{} is a file", path_striped);
         backup_single_file(&item_path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs)?;
@@ -311,7 +319,7 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, list:
     return Ok(());
 }
 
-fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: &mut File, n_errs: &mut i32) {
+fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32) {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -325,7 +333,7 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, list: 
     for entry in entries {
         let entry = entry.unwrap();
         let item_path = entry.path();
-        match do_item(base_source, storage, &item_path, alg, list, n_errs) {
+        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs) {
             Err(err) => {
                 *n_errs += 1;
                 error!("Unexpected error on {:?}: {}", item_path, err);
