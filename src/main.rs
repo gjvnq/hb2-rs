@@ -24,6 +24,7 @@ use openssl::hash::{Hasher, MessageDigest};
 #[macro_use] extern crate log;
 
 mod log_hack;
+mod database;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -93,6 +94,8 @@ fn main() {
     let source_path = Path::new(matches.value_of("SOURCE").unwrap());
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
     let alg = Nid::SHA256;
+
+    database::open_by_dir(storage_path).expect("failed to open db");
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
