@@ -18,6 +18,7 @@ use std::io;
 use std::env;
 use openssl::nid::Nid;
 use openssl::hash::{Hasher, MessageDigest};
+use std::process::Command;
 
 
 
@@ -68,6 +69,14 @@ fn main() {
             .help("Where to save the backups")
             .required(true)
             .index(2))
+        .arg(clap::Arg::with_name("ADB PATH PREFIX")
+            .help("Path prefix to add to use for ADB based hashing")
+            .takes_value(true)
+            .long("adb-prefix"))
+        .arg(clap::Arg::with_name("hash-via-adb")
+            .help("Use ADB to hash files instead of doing so locally")
+            .long("hash-via-abd")
+            .takes_value(false))
         .arg(clap::Arg::with_name("alg")
             .default_value("SHA256")
             .takes_value(true)
@@ -96,6 +105,9 @@ fn main() {
     log_hack::start_logger(force_color, debug);
     debug!("started log");
 
+    let adb_hashing = matches.is_present("hash-via-adb");
+    let adb_prefix = Path::new(matches.value_of("ADB PATH PREFIX").unwrap_or("/"));
+
     let source_path = Path::new(matches.value_of("SOURCE").unwrap());
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
     let alg = Nid::SHA256;
@@ -104,7 +116,7 @@ fn main() {
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs);
+    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs, adb_hashing, adb_prefix);
     finish_backup(list);
 
     if n_errs != 0 {
@@ -168,8 +180,7 @@ fn get_backup_path_by_hash(storage: &Path, alg: Nid, hash: &str) -> PathBuf {
     return ans
 }
 
-fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid, list: &mut File, metadata: fs::Metadata, mod_date: &str, perm: &str, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
-    //  Hash file
+fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::Metadata, n_errs: &mut i32) -> Result<String, Box<dyn Error>>{
     let mut file = match fs::File::open(&path) {
         Ok(v) => v,
         Err(err) => {
@@ -188,7 +199,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
             return Err(Box::new(err));
         }
     };
-    let hash = hex::encode(hasher.finish()?);
+    let hash = hasher.finish()?;
 
     // Check size and consistency
     let size = metadata.len();
@@ -199,7 +210,30 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
         bail!(tmp)
     }
 
+    return Ok(hex::encode(hash));
+}
+
+fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path) -> Result<String, Box<dyn Error>> {
+    let path_in_android = adb_prefix.join(path_striped);
+    let core_cmd = format!("sha256sum {:?}", path_in_android);
+    let output = Command::new("adb").arg("shell").arg(core_cmd).output().expect("failed to execute process");
+    let s = match std::str::from_utf8(&output.stdout) {
+        Ok(v) => v,
+        Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+    };
+    let hash = &s[..64];
+    return Ok(hash.to_string());
+}
+
+fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid, list: &mut File, metadata: fs::Metadata, mod_date: &str, perm: &str, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) -> Result<(), Box<dyn Error>> {
+    //  Hash file
+    let hash = match adb_hashing {
+        false => hash_file_directly(path, path_striped, alg, &metadata, n_errs)?,
+        true => hash_file_via_adb(path_striped, alg, adb_prefix)?
+    };
+
     // Check if backuped file already exists
+    let size = metadata.len();
     let path_backup = get_backup_path_by_hash(storage, alg, &hash);
     let mut should_copy = false;
     if path_backup.exists() {
@@ -258,7 +292,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
     return Ok(());
 }
 
-fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32) -> Result<(), Box<dyn Error>> {
+fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) -> Result<(), Box<dyn Error>> {
     let path_striped = escape(item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap());
     debug!("Processing {}", path_striped);
 
@@ -303,23 +337,23 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
         } else {
             info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_striped, target_path);
             writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, escape(target_path.to_str().unwrap()))?;
-            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs)?;
+            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix)?;
         }
     } else if metadata.file_type().is_dir() {
         // Recursion time!
         debug!("{} is a directory", path_striped);
         writeln!(list, "D {} {} {}", mod_date, perm, path_striped)?;
-        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs);
+        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs, adb_hashing, adb_prefix);
     } else if metadata.file_type().is_file() {
         debug!("{} is a file", path_striped);
-        backup_single_file(&item_path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs)?;
+        backup_single_file(&item_path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs, adb_hashing, adb_prefix)?;
     } else {
         unimplemented!("File type {:?} is not supported", metadata.file_type());
     }
     return Ok(());
 }
 
-fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32) {
+fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -333,7 +367,7 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_f
     for entry in entries {
         let entry = entry.unwrap();
         let item_path = entry.path();
-        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs) {
+        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix) {
             Err(err) => {
                 *n_errs += 1;
                 error!("Unexpected error on {:?}: {}", item_path, err);
