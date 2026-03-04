@@ -2,31 +2,32 @@
 extern crate simple_error;
 
 extern crate clap;
+use chrono::{DateTime, SecondsFormat, Utc};
+use e2p_fileflags::FileFlags;
 use std::error::Error;
-use std::path::PathBuf;
-use std::io::Write as IoWriter;
-use std::fs::File;
 use std::fmt::Write as FmtWritter;
-use std::path::Path;
 use std::fs;
-use e2p_fileflags::{FileFlags};
-use chrono::{Utc, DateTime, SecondsFormat};
+use std::fs::File;
+use std::io::Write as IoWriter;
+use std::path::Path;
+use std::path::PathBuf;
 extern crate env_logger;
-use snailquote::{escape, unescape};
-use std::os::linux::fs::MetadataExt;
-use std::io;
-use std::env;
-use openssl::nid::Nid;
 use openssl::hash::{Hasher, MessageDigest};
-use std::process::Command;
-use std::collections::HashSet;
-use std::io::BufRead;
+use openssl::nid::Nid;
 use regex::Regex;
+use snailquote::{escape, unescape};
+use std::collections::HashSet;
+use std::env;
+use std::io;
+use std::io::BufRead;
+use std::os::linux::fs::MetadataExt;
+use std::process::Command;
 
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate log;
 
-mod log_hack;
 mod database;
+mod log_hack;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -115,15 +116,22 @@ fn main() {
     let source_path = Path::new(matches.value_of("SOURCE").unwrap());
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
 
-    let alg = match matches.value_of("alg").expect("failed to get hash algorithm") {
+    let alg = match matches
+        .value_of("alg")
+        .expect("failed to get hash algorithm")
+    {
         "SHA1" => Nid::SHA1,
         "SHA256" => Nid::SHA256,
         "SHA512" => Nid::SHA512,
-        alg => panic!("invalid hash algorithm: {}", alg)
+        alg => panic!("invalid hash algorithm: {}", alg),
     };
 
     let re = Regex::new(r"\s+").unwrap();
-    let skip_lists = matches.get_many::<String>("skip-if-in").unwrap_or_default().map(|v| Path::new(v.as_str())).collect::<Vec<_>>();
+    let skip_lists = matches
+        .get_many::<String>("skip-if-in")
+        .unwrap_or_default()
+        .map(|v| Path::new(v.as_str()))
+        .collect::<Vec<_>>();
     let mut files_to_skip = HashSet::<String>::new();
     for skip_list_path in skip_lists {
         let fp = File::open(skip_list_path).expect("failed to read file passed by --skip-if-in");
@@ -143,7 +151,18 @@ fn main() {
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs, adb_hashing, adb_prefix, &files_to_skip);
+    do_backup(
+        source_path,
+        source_path,
+        storage_path,
+        alg,
+        file_flags,
+        &mut list,
+        &mut n_errs,
+        adb_hashing,
+        adb_prefix,
+        &files_to_skip,
+    );
     finish_backup(list);
 
     if n_errs != 0 {
@@ -155,7 +174,7 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
     trace!("start_backup - begin");
     let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     debug!("Considering now as {}", now_str);
-    let list_path = storage.join(now_str+".txt");
+    let list_path = storage.join(now_str + ".txt");
     debug!("Backup list path: {:?}", list_path);
 
     let mut list = File::create(&list_path)?;
@@ -169,10 +188,13 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
     path_backup_parent.push(alg_str);
     if !path_backup_parent.exists() {
         match fs::create_dir(&path_backup_parent) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(err) => {
-                error!("Failed to create directory {:?}: {}", &path_backup_parent, err);
-                return Err(err)
+                error!(
+                    "Failed to create directory {:?}: {}",
+                    &path_backup_parent, err
+                );
+                return Err(err);
             }
         };
     }
@@ -181,11 +203,31 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
     Ok(list)
 }
 
-
 fn lsattr2str(flags: e2p_fileflags::Flags) -> String {
     use e2p_fileflags::Flags;
     let mut ans = String::new();
-    let flag_chars = [(Flags::SECRM, "s"), (Flags::UNRM, "u" ), (Flags::SYNC, "S"), (Flags::DIRSYNC, "D"), (Flags::IMMUTABLE, "i"), (Flags::APPEND, "a"), (Flags::NODUMP, "d"), (Flags::NOATIME, "A"), (Flags::COMPR, "c"), (Flags::ENCRYPT, "E"), (Flags::JOURNAL_DATA, "j"), (Flags::INDEX, "I"), (Flags::NOTAIL, "t"), (Flags::TOPDIR, "T"), (Flags::EXTENTS, "e"), (Flags::NOCOW, "C"), (Flags::CASEFOLD, "F"), (Flags::INLINE_DATA, "N"), (Flags::PROJINHERIT, "P"), (Flags::VERITY, "V")];
+    let flag_chars = [
+        (Flags::SECRM, "s"),
+        (Flags::UNRM, "u"),
+        (Flags::SYNC, "S"),
+        (Flags::DIRSYNC, "D"),
+        (Flags::IMMUTABLE, "i"),
+        (Flags::APPEND, "a"),
+        (Flags::NODUMP, "d"),
+        (Flags::NOATIME, "A"),
+        (Flags::COMPR, "c"),
+        (Flags::ENCRYPT, "E"),
+        (Flags::JOURNAL_DATA, "j"),
+        (Flags::INDEX, "I"),
+        (Flags::NOTAIL, "t"),
+        (Flags::TOPDIR, "T"),
+        (Flags::EXTENTS, "e"),
+        (Flags::NOCOW, "C"),
+        (Flags::CASEFOLD, "F"),
+        (Flags::INLINE_DATA, "N"),
+        (Flags::PROJINHERIT, "P"),
+        (Flags::VERITY, "V"),
+    ];
     for pair in &flag_chars {
         if flags.contains(pair.0) {
             ans.push_str(pair.1);
@@ -193,21 +235,32 @@ fn lsattr2str(flags: e2p_fileflags::Flags) -> String {
             ans.push_str("-");
         }
     }
-    return ans
+    return ans;
 }
 
 fn get_backup_path_by_hash(storage: &Path, alg: Nid, hash: &str) -> PathBuf {
-    trace!("get_backup_path_by_hash (storage: {:?}, alg: {:?}, hash: {:?})", storage, alg, hash);
+    trace!(
+        "get_backup_path_by_hash (storage: {:?}, alg: {:?}, hash: {:?})",
+        storage,
+        alg,
+        hash
+    );
     let mut ans = PathBuf::from(storage);
     let alg_name = alg.short_name().unwrap();
     ans.push(alg_name);
     ans.push(&hash[0..2]);
     ans.push(hash);
     trace!("get_backup_path_by_hash return {:?}", ans);
-    return ans
+    return ans;
 }
 
-fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::Metadata, n_errs: &mut i32) -> Result<String, Box<dyn Error>>{
+fn hash_file_directly(
+    path: &Path,
+    path_striped: &str,
+    alg: Nid,
+    metadata: &fs::Metadata,
+    n_errs: &mut i32,
+) -> Result<String, Box<dyn Error>> {
     let mut file = match fs::File::open(&path) {
         Ok(v) => v,
         Err(err) => {
@@ -232,7 +285,10 @@ fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::
     let size = metadata.len();
     if size != n {
         *n_errs += 1;
-        let tmp = format!("Number of hashed bytes doesn't match the file size: {} and {}, respectively", n, size);
+        let tmp = format!(
+            "Number of hashed bytes doesn't match the file size: {} and {}, respectively",
+            n, size
+        );
         error!("{}", tmp);
         bail!(tmp)
     }
@@ -240,16 +296,25 @@ fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::
     return Ok(hex::encode(hash));
 }
 
-fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path, n_errs: &mut i32) -> Result<String, Box<dyn Error>> {
+fn hash_file_via_adb(
+    path_striped: &str,
+    alg: Nid,
+    adb_prefix: &Path,
+    n_errs: &mut i32,
+) -> Result<String, Box<dyn Error>> {
     let path_in_android = adb_prefix.join(path_striped);
     let (hash_cmd, hash_len) = match alg {
         Nid::SHA512 => ("sha512sum", 128),
         Nid::SHA256 => ("sha256sum", 64),
         Nid::SHA1 => ("sha1sum", 40),
-        alg => panic!("invalid algorithm: {:?}", alg)
+        alg => panic!("invalid algorithm: {:?}", alg),
     };
     let core_cmd = format!("{} {}", hash_cmd, path_in_android.to_str().unwrap());
-    let output = Command::new("adb").arg("shell").arg(core_cmd.clone()).output().expect("failed to execute process");
+    let output = Command::new("adb")
+        .arg("shell")
+        .arg(core_cmd.clone())
+        .output()
+        .expect("failed to execute process");
     let s = match std::str::from_utf8(&output.stdout) {
         Ok(v) => v,
         Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
@@ -265,11 +330,23 @@ fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path, n_errs: &m
     return Ok(hash.to_string());
 }
 
-fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid, list: &mut File, metadata: fs::Metadata, mod_date: &str, perm: &str, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) -> Result<(), Box<dyn Error>> {
+fn backup_single_file(
+    path: &Path,
+    path_striped: &str,
+    storage: &Path,
+    alg: Nid,
+    list: &mut File,
+    metadata: fs::Metadata,
+    mod_date: &str,
+    perm: &str,
+    n_errs: &mut i32,
+    adb_hashing: bool,
+    adb_prefix: &Path,
+) -> Result<(), Box<dyn Error>> {
     //  Hash file
     let hash = match adb_hashing {
         false => hash_file_directly(path, path_striped, alg, &metadata, n_errs)?,
-        true => hash_file_via_adb(path_striped, alg, adb_prefix, n_errs)?
+        true => hash_file_via_adb(path_striped, alg, adb_prefix, n_errs)?,
     };
 
     // Check if backuped file already exists
@@ -290,10 +367,10 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
         let backuped_size = metadata.len();
         if size == backuped_size {
             debug!("File {:?} has the correct size: {}", path_backup, size);
-        } else if backuped_size > size  {
+        } else if backuped_size > size {
             error!("Files {:?} and {:?} are supposed to have same hash, but the latter is larger than the first. The second file HAS NOT been overwritten.", path_striped, path_backup);
             *n_errs += 1;
-        } else if backuped_size < size  {
+        } else if backuped_size < size {
             warn!("Files {:?} and {:?} are supposed to have same hash, but the latter is smaller than the first. This looks like an interrupted copy. The second file will be overwritten.", path_striped, path_backup);
             should_copy = true;
         }
@@ -307,19 +384,25 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
         let path_backup_parent = path_backup.as_path().parent().unwrap();
         if !path_backup_parent.exists() {
             match fs::create_dir(path_backup_parent) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => {
                     *n_errs += 1;
-                    error!("Failed to create directory {:?}: {}", path_backup_parent, err);
+                    error!(
+                        "Failed to create directory {:?}: {}",
+                        path_backup_parent, err
+                    );
                     return Err(Box::new(err));
                 }
             };
         }
 
         match fs::copy(&path, &path_backup) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(err) => {
-                error!("Failed to copy file {:?} to {:?}: {}", path, path_backup, err);
+                error!(
+                    "Failed to copy file {:?} to {:?}: {}",
+                    path, path_backup, err
+                );
                 *n_errs += 1;
                 return Err(Box::new(err));
             }
@@ -327,13 +410,32 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
     }
 
     // Write
-    writeln!(list, "F {:12} {} {} {} {}", size, mod_date, perm, hash, path_striped)?;
+    writeln!(
+        list,
+        "F {:12} {} {} {} {}",
+        size, mod_date, perm, hash, path_striped
+    )?;
 
     return Ok(());
 }
 
-fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path, files_to_skip: &HashSet<String>) -> Result<(), Box<dyn Error>> {
-    let path_striped = item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap();
+fn do_item(
+    base_source: &Path,
+    storage: &Path,
+    item_path: &Path,
+    alg: Nid,
+    file_flags: bool,
+    list: &mut File,
+    n_errs: &mut i32,
+    adb_hashing: bool,
+    adb_prefix: &Path,
+    files_to_skip: &HashSet<String>,
+) -> Result<(), Box<dyn Error>> {
+    let path_striped = item_path
+        .strip_prefix(base_source)
+        .unwrap_or(item_path)
+        .to_str()
+        .unwrap();
     let path_quoted = escape(path_striped);
     debug!("Processing {}", path_quoted);
 
@@ -341,10 +443,11 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
         Ok(v) => v,
         Err(err) => {
             error!("Failed to get metadata for {}: {}", path_quoted, err);
-            return Err(Box::new(err))
+            return Err(Box::new(err));
         }
     };
-    let mod_date = DateTime::<Utc>::from(metadata.modified()?).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mod_date =
+        DateTime::<Utc>::from(metadata.modified()?).to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut perm = String::new();
     let lsattr: String = match file_flags {
         true => match item_path.flags() {
@@ -352,15 +455,18 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
             Err(err) => {
                 warn!("Failed to get lsattr for {}: {}", path_quoted, err);
                 "????????????????????".to_string()
-            },
+            }
         },
-        false => "????????????????????".to_string()
+        false => "????????????????????".to_string(),
     };
-    write!(perm, "{}:{} {:o} {}",
+    write!(
+        perm,
+        "{}:{} {:o} {}",
         metadata.st_uid(),
         metadata.st_gid(),
         metadata.st_mode(),
-        lsattr)?;
+        lsattr
+    )?;
 
     if metadata.file_type().is_symlink() {
         debug!("{} is a link", path_quoted);
@@ -368,29 +474,78 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
             Ok(v) => v,
             Err(err) => {
                 error!("Failed to read {:?} as a symlink: {}", item_path, err);
-                return Err(Box::new(err))
+                return Err(Box::new(err));
             }
         };
-         if target_path.starts_with(base_source) {
+        if target_path.starts_with(base_source) {
             // If the link targets something inside the base_source, just record the link and don't even read the file as the target will be found separately.
-            let target_path_quoted = escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
-            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_quoted, target_path_quoted)?;
+            let target_path_quoted =
+                escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
+            writeln!(
+                list,
+                "L {} {} {} -> {}",
+                mod_date, perm, path_quoted, target_path_quoted
+            )?;
         } else {
             info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_quoted, target_path);
-            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_quoted, escape(target_path.to_str().unwrap()))?;
-            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip)?;
+            writeln!(
+                list,
+                "L {} {} {} -> {}",
+                mod_date,
+                perm,
+                path_quoted,
+                escape(target_path.to_str().unwrap())
+            )?;
+            do_item(
+                base_source,
+                storage,
+                &target_path,
+                alg,
+                file_flags,
+                list,
+                n_errs,
+                adb_hashing,
+                adb_prefix,
+                files_to_skip,
+            )?;
         }
     } else if metadata.file_type().is_dir() {
         // Recursion time!
         debug!("{} is a directory", path_quoted);
         writeln!(list, "D {} {} {}", mod_date, perm, path_quoted)?;
-        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip);
+        do_backup(
+            base_source,
+            &item_path,
+            storage,
+            alg,
+            file_flags,
+            list,
+            n_errs,
+            adb_hashing,
+            adb_prefix,
+            files_to_skip,
+        );
     } else if metadata.file_type().is_file() {
         debug!("{} is a file", path_quoted);
         if files_to_skip.contains(path_striped) {
-            debug!("skipping {} because it is on a list of already backed up files", path_quoted);
+            debug!(
+                "skipping {} because it is on a list of already backed up files",
+                path_quoted
+            );
         } else {
-            backup_single_file(&item_path, &path_quoted, storage, alg, list, metadata, &mod_date, &perm, n_errs, adb_hashing, adb_prefix)?;
+            backup_single_file(
+                &item_path,
+                &path_quoted,
+                storage,
+                alg,
+                list,
+                metadata,
+                &mod_date,
+                &perm,
+                n_errs,
+                adb_hashing,
+                adb_prefix,
+            )?;
         }
     } else {
         unimplemented!("File type {:?} is not supported", metadata.file_type());
@@ -398,7 +553,18 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
     return Ok(());
 }
 
-fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path, files_to_skip: &HashSet<String>) {
+fn do_backup(
+    base_source: &Path,
+    source: &Path,
+    storage: &Path,
+    alg: Nid,
+    file_flags: bool,
+    list: &mut File,
+    n_errs: &mut i32,
+    adb_hashing: bool,
+    adb_prefix: &Path,
+    files_to_skip: &HashSet<String>,
+) {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -406,13 +572,24 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_f
             error!("{}", err);
             *n_errs += 1;
             trace!("end {:?}", source);
-            return
+            return;
         }
     };
     for entry in entries {
         let entry = entry.unwrap();
         let item_path = entry.path();
-        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip) {
+        match do_item(
+            base_source,
+            storage,
+            &item_path,
+            alg,
+            file_flags,
+            list,
+            n_errs,
+            adb_hashing,
+            adb_prefix,
+            files_to_skip,
+        ) {
             Err(err) => {
                 *n_errs += 1;
                 error!("Unexpected error on {:?}: {}", item_path, err);

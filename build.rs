@@ -1,7 +1,7 @@
 use anyhow::Result;
-use vergen::{Config, vergen};
+use vergen::{vergen, Config};
 
 fn main() -> Result<()> {
-  // Generate all the environment variables we will latter need
-  vergen(Config::default())
+    // Generate all the environment variables we will latter need
+    vergen(Config::default())
 }
