@@ -1,7 +1,7 @@
 [package]
 name = "hb2"
 build = "build.rs"
-version = "0.6.1"
+version = "0.6.2"
 authors = ["G Queiroz <gabrieljvnq@gmail.com>"]
 edition = "2021"
 description = "A simple tool for backing up documents based on their hashes"
@@ -10,6 +10,7 @@ description = "A simple tool for backing up documents based on their hashes"
 
 [dependencies]
 log = "0.4"
+regex = "1.10.6"
 hex = "0.4"
 clap = { version = "~3.2", features = ["cargo"] }
 chrono = "0.4"

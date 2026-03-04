@@ -12,15 +12,16 @@ use std::fs;
 use e2p_fileflags::{FileFlags};
 use chrono::{Utc, DateTime, SecondsFormat};
 extern crate env_logger;
-use snailquote::escape;
+use snailquote::{escape, unescape};
 use std::os::linux::fs::MetadataExt;
 use std::io;
 use std::env;
 use openssl::nid::Nid;
 use openssl::hash::{Hasher, MessageDigest};
 use std::process::Command;
-
-
+use std::collections::HashSet;
+use std::io::BufRead;
+use regex::Regex;
 
 #[macro_use] extern crate log;
 
@@ -81,8 +82,12 @@ fn main() {
             .default_value("SHA256")
             .takes_value(true)
             .long("alg")
-            .possible_values(&["SHA256"])
+            .possible_values(&["SHA1", "SHA256", "SHA512"])
             .help("Selects the hash algorithm"))
+        .arg(clap::Arg::with_name("skip-if-in")
+            .action(clap::ArgAction::Append)
+            .long("skip-if-in")
+            .help("Specifies an hb2 output log as a list of files to skip when backing up"))
         .arg(clap::Arg::with_name("force-color")
             .long("force-color")
             .takes_value(false)
@@ -107,16 +112,38 @@ fn main() {
 
     let adb_hashing = matches.is_present("hash-via-adb");
     let adb_prefix = Path::new(matches.value_of("ADB PATH PREFIX").unwrap_or("/"));
-
     let source_path = Path::new(matches.value_of("SOURCE").unwrap());
     let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
-    let alg = Nid::SHA256;
 
+    let alg = match matches.value_of("alg").expect("failed to get hash algorithm") {
+        "SHA1" => Nid::SHA1,
+        "SHA256" => Nid::SHA256,
+        "SHA512" => Nid::SHA512,
+        alg => panic!("invalid hash algorithm: {}", alg)
+    };
+
+    let re = Regex::new(r"\s+").unwrap();
+    let skip_lists = matches.get_many::<String>("skip-if-in").unwrap_or_default().map(|v| Path::new(v.as_str())).collect::<Vec<_>>();
+    let mut files_to_skip = HashSet::<String>::new();
+    for skip_list_path in skip_lists {
+        let fp = File::open(skip_list_path).expect("failed to read file passed by --skip-if-in");
+        let lines = io::BufReader::new(fp).lines();
+        for line in lines {
+            let line = line.expect("");
+            let parts: Vec<&str> = re.splitn(&line, 8).collect();
+            if parts[0] == "F" {
+                let filename = unescape(parts[7]).expect("Failed to unescape");
+                files_to_skip.insert(filename);
+            }
+        }
+    }
+
+    // TODO: actually use the database
     database::open_by_dir(storage_path).expect("failed to open db");
 
     let mut n_errs = 0;
     let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs, adb_hashing, adb_prefix);
+    do_backup(source_path, source_path, storage_path, alg, file_flags, &mut list, &mut n_errs, adb_hashing, adb_prefix, &files_to_skip);
     finish_backup(list);
 
     if n_errs != 0 {
@@ -128,7 +155,7 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
     trace!("start_backup - begin");
     let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     debug!("Considering now as {}", now_str);
-    let list_path = storage.clone().join(now_str+".txt");
+    let list_path = storage.join(now_str+".txt");
     debug!("Backup list path: {:?}", list_path);
 
     let mut list = File::create(&list_path)?;
@@ -215,20 +242,26 @@ fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::
 
 fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path, n_errs: &mut i32) -> Result<String, Box<dyn Error>> {
     let path_in_android = adb_prefix.join(path_striped);
-    let core_cmd = format!("sha256sum {}", path_in_android.to_str().unwrap());
+    let (hash_cmd, hash_len) = match alg {
+        Nid::SHA512 => ("sha512sum", 128),
+        Nid::SHA256 => ("sha256sum", 64),
+        Nid::SHA1 => ("sha1sum", 40),
+        alg => panic!("invalid algorithm: {:?}", alg)
+    };
+    let core_cmd = format!("{} {}", hash_cmd, path_in_android.to_str().unwrap());
     let output = Command::new("adb").arg("shell").arg(core_cmd.clone()).output().expect("failed to execute process");
     let s = match std::str::from_utf8(&output.stdout) {
         Ok(v) => v,
         Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
     };
-    if s.len() < 64 {
+    if s.len() < hash_len {
         *n_errs += 1;
-        let tmp = format!("shasum output is too short: {:?}", s);
+        let tmp = format!("hash output is too short: {:?}", s);
         error!("{}", tmp);
         error!("core_cmd = {}", core_cmd);
         bail!(tmp)
     }
-    let hash = &s[..64];
+    let hash = &s[..hash_len];
     return Ok(hash.to_string());
 }
 
@@ -299,14 +332,15 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
     return Ok(());
 }
 
-fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) -> Result<(), Box<dyn Error>> {
-    let path_striped = escape(item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap());
-    debug!("Processing {}", path_striped);
+fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path, files_to_skip: &HashSet<String>) -> Result<(), Box<dyn Error>> {
+    let path_striped = item_path.strip_prefix(base_source).unwrap_or(item_path).to_str().unwrap();
+    let path_quoted = escape(path_striped);
+    debug!("Processing {}", path_quoted);
 
     let metadata = match fs::symlink_metadata(item_path) {
         Ok(v) => v,
         Err(err) => {
-            error!("Failed to get metadata for {}: {}", path_striped, err);
+            error!("Failed to get metadata for {}: {}", path_quoted, err);
             return Err(Box::new(err))
         }
     };
@@ -316,7 +350,7 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
         true => match item_path.flags() {
             Ok(flags) => lsattr2str(flags),
             Err(err) => {
-                warn!("Failed to get lsattr for {}: {}", path_striped, err);
+                warn!("Failed to get lsattr for {}: {}", path_quoted, err);
                 "????????????????????".to_string()
             },
         },
@@ -329,7 +363,7 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
         lsattr)?;
 
     if metadata.file_type().is_symlink() {
-        debug!("{} is a link", path_striped);
+        debug!("{} is a link", path_quoted);
         let target_path = match item_path.read_link() {
             Ok(v) => v,
             Err(err) => {
@@ -339,28 +373,32 @@ fn do_item(base_source: &Path, storage: &Path, item_path: &Path, alg: Nid, file_
         };
          if target_path.starts_with(base_source) {
             // If the link targets something inside the base_source, just record the link and don't even read the file as the target will be found separately.
-            let target_path_striped = escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
-            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, target_path_striped)?;
+            let target_path_quoted = escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
+            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_quoted, target_path_quoted)?;
         } else {
-            info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_striped, target_path);
-            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_striped, escape(target_path.to_str().unwrap()))?;
-            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix)?;
+            info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_quoted, target_path);
+            writeln!(list, "L {} {} {} -> {}", mod_date, perm, path_quoted, escape(target_path.to_str().unwrap()))?;
+            do_item(base_source, storage, &target_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip)?;
         }
     } else if metadata.file_type().is_dir() {
         // Recursion time!
-        debug!("{} is a directory", path_striped);
-        writeln!(list, "D {} {} {}", mod_date, perm, path_striped)?;
-        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs, adb_hashing, adb_prefix);
+        debug!("{} is a directory", path_quoted);
+        writeln!(list, "D {} {} {}", mod_date, perm, path_quoted)?;
+        do_backup(base_source, &item_path, storage, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip);
     } else if metadata.file_type().is_file() {
-        debug!("{} is a file", path_striped);
-        backup_single_file(&item_path, &path_striped, storage, alg, list, metadata, &mod_date, &perm, n_errs, adb_hashing, adb_prefix)?;
+        debug!("{} is a file", path_quoted);
+        if files_to_skip.contains(path_striped) {
+            debug!("skipping {} because it is on a list of already backed up files", path_quoted);
+        } else {
+            backup_single_file(&item_path, &path_quoted, storage, alg, list, metadata, &mod_date, &perm, n_errs, adb_hashing, adb_prefix)?;
+        }
     } else {
         unimplemented!("File type {:?} is not supported", metadata.file_type());
     }
     return Ok(());
 }
 
-fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path) {
+fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_flags: bool, list: &mut File, n_errs: &mut i32, adb_hashing: bool, adb_prefix: &Path, files_to_skip: &HashSet<String>) {
     trace!("on  {:?}", source);
     let entries = match fs::read_dir(source) {
         Ok(e) => e,
@@ -374,7 +412,7 @@ fn do_backup(base_source: &Path, source: &Path, storage: &Path, alg: Nid, file_f
     for entry in entries {
         let entry = entry.unwrap();
         let item_path = entry.path();
-        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix) {
+        match do_item(base_source, storage, &item_path, alg, file_flags, list, n_errs, adb_hashing, adb_prefix, files_to_skip) {
             Err(err) => {
                 *n_errs += 1;
                 error!("Unexpected error on {:?}: {}", item_path, err);
