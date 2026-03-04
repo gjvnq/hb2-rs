@@ -213,14 +213,21 @@ fn hash_file_directly(path: &Path, path_striped: &str, alg: Nid, metadata: &fs::
     return Ok(hex::encode(hash));
 }
 
-fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path) -> Result<String, Box<dyn Error>> {
+fn hash_file_via_adb(path_striped: &str, alg: Nid, adb_prefix: &Path, n_errs: &mut i32) -> Result<String, Box<dyn Error>> {
     let path_in_android = adb_prefix.join(path_striped);
-    let core_cmd = format!("sha256sum {:?}", path_in_android);
-    let output = Command::new("adb").arg("shell").arg(core_cmd).output().expect("failed to execute process");
+    let core_cmd = format!("sha256sum {}", path_in_android.to_str().unwrap());
+    let output = Command::new("adb").arg("shell").arg(core_cmd.clone()).output().expect("failed to execute process");
     let s = match std::str::from_utf8(&output.stdout) {
         Ok(v) => v,
         Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
     };
+    if s.len() < 64 {
+        *n_errs += 1;
+        let tmp = format!("shasum output is too short: {:?}", s);
+        error!("{}", tmp);
+        error!("core_cmd = {}", core_cmd);
+        bail!(tmp)
+    }
     let hash = &s[..64];
     return Ok(hash.to_string());
 }
@@ -229,7 +236,7 @@ fn backup_single_file(path: &Path, path_striped: &str, storage: &Path, alg: Nid,
     //  Hash file
     let hash = match adb_hashing {
         false => hash_file_directly(path, path_striped, alg, &metadata, n_errs)?,
-        true => hash_file_via_adb(path_striped, alg, adb_prefix)?
+        true => hash_file_via_adb(path_striped, alg, adb_prefix, n_errs)?
     };
 
     // Check if backuped file already exists
