@@ -548,7 +548,7 @@ fn do_item(
         } else {
             backup_single_file(
                 &item_path,
-                &path_quoted,
+                &path_striped,
                 storage,
                 alg,
                 list,
