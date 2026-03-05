@@ -431,6 +431,9 @@ fn do_item(
     adb_prefix: &Path,
     files_to_skip: &HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
+    debug!("{:?}", item_path.strip_prefix(base_source));
+    debug!("{:?}", item_path.strip_prefix(base_source).unwrap_or(item_path));
+    debug!("{:?}", item_path.strip_prefix(base_source).unwrap_or(item_path).to_str());
     let path_striped = item_path
         .strip_prefix(base_source)
         .unwrap_or(item_path)
