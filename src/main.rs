@@ -316,7 +316,7 @@ fn hash_file_via_adb(
         Nid::SHA1 => ("sha1sum", 40),
         alg => panic!("invalid algorithm: {:?}", alg),
     };
-    let core_cmd = format!("{} {}", hash_cmd, path_in_android.to_str().unwrap());
+    let core_cmd = format!("{} {}", hash_cmd, escape(path_in_android.to_str().unwrap()));
     let output = Command::new("adb")
         .arg("shell")
         .arg(core_cmd.clone())
