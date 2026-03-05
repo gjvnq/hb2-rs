@@ -22,6 +22,7 @@ use std::io;
 use std::io::BufRead;
 use std::os::linux::fs::MetadataExt;
 use std::process::Command;
+use std::sync::OnceLock;
 
 #[macro_use]
 extern crate log;
@@ -44,15 +45,20 @@ const RUSTC_HOST_TRIPLE: &str = env!("VERGEN_RUSTC_HOST_TRIPLE");
 const RUSTC_COMMIT_HASH: &str = env!("VERGEN_RUSTC_COMMIT_HASH");
 const RUSTC_SEMVER: &str = env!("VERGEN_RUSTC_SEMVER");
 const RUSTC_LLVM_VERSION: &str = env!("VERGEN_RUSTC_LLVM_VERSION");
+static LONG_VERSION: OnceLock<String> = OnceLock::new();
+
+fn get_long_version() -> &'static String {
+    LONG_VERSION.get_or_init(|| {
+        format!("\nVersion: {VERSION}\nBuild info: {BUILD_SEMVER} built at {BUILD_TIMESTAMP}\nGit info: {GIT_SEMVER} from commit {GIT_SHA} date {GIT_COMMIT_TIMESTAMP} at branch {GIT_BRANCH}\nRustc info: {RUSTC_CHANNEL} {RUSTC_SEMVER} {RUSTC_HOST_TRIPLE} with LLVM {RUSTC_LLVM_VERSION} (rustc commit {RUSTC_COMMIT_HASH})")
+    })
+}
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
 
-    let long_version: String = format!("\nVersion: {VERSION}\nBuild info: {BUILD_SEMVER} built at {BUILD_TIMESTAMP}\nGit info: {GIT_SEMVER} from commit {GIT_SHA} date {GIT_COMMIT_TIMESTAMP} at branch {GIT_BRANCH}\nRustc info: {RUSTC_CHANNEL} {RUSTC_SEMVER} {RUSTC_HOST_TRIPLE} with LLVM {RUSTC_LLVM_VERSION} (rustc commit {RUSTC_COMMIT_HASH})");
-
     let matches = clap::App::new("Hash Based Backup tool")
         .version(VERSION)
-        .long_version(long_version.as_str())
+        .long_version(get_long_version().as_str())
         .author(AUTHORS)
         .about(DESCRIPTION)
         .arg(clap::Arg::with_name("SOURCE")
@@ -181,7 +187,8 @@ fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io
     let alg_str = alg.short_name().unwrap();
     trace!("Created file {:?}", list_path);
     writeln!(list, "# SOURCE: {}", source.to_str().unwrap())?;
-    writeln!(list, "# HASH:   {}", alg_str)?;
+    writeln!(list, "# HASH ALG:   {}", alg_str)?;
+    writeln!(list, "# HB2 VERSION: {}", &get_long_version())?;
     list.sync_all()?;
 
     let mut path_backup_parent = PathBuf::from(storage);
@@ -431,14 +438,17 @@ fn do_item(
     adb_prefix: &Path,
     files_to_skip: &HashSet<String>,
 ) -> Result<(), Box<dyn Error>> {
-    debug!("{:?}", item_path.strip_prefix(base_source));
-    debug!("{:?}", item_path.strip_prefix(base_source).unwrap_or(item_path));
-    debug!("{:?}", item_path.strip_prefix(base_source).unwrap_or(item_path).to_str());
     let path_striped = item_path
         .strip_prefix(base_source)
-        .unwrap_or(item_path)
-        .to_str()
-        .unwrap();
+        .unwrap_or(item_path);
+
+    let path_striped = match path_striped.to_str() {
+        Some(s) => s,
+        None => {
+            error!("Failure to decode the following path: {:?} (base_source={:?}, item_path={:?})", path_striped, base_source, item_path);
+            return Ok(())
+        },
+    };
     let path_quoted = escape(path_striped);
     debug!("Processing {}", path_quoted);
 
