@@ -8,5 +8,7 @@ pkgs.mkShell {
     openssl.dev
     e2fsprogs.dev
     libclang.lib
+    adbfs-rootless
+    android-tools
   ];
 }

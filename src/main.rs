@@ -12,6 +12,7 @@ use std::io::Write as IoWriter;
 use std::path::Path;
 use std::path::PathBuf;
 extern crate env_logger;
+use clap::ArgMatches;
 use openssl::hash::{Hasher, MessageDigest};
 use openssl::nid::Nid;
 use regex::Regex;
@@ -22,6 +23,7 @@ use std::io;
 use std::io::BufRead;
 use std::os::linux::fs::MetadataExt;
 use std::process::Command;
+use tempfile::TempDir;
 
 #[macro_use]
 extern crate log;
@@ -45,50 +47,94 @@ const RUSTC_COMMIT_HASH: &str = env!("VERGEN_RUSTC_COMMIT_HASH");
 const RUSTC_SEMVER: &str = env!("VERGEN_RUSTC_SEMVER");
 const RUSTC_LLVM_VERSION: &str = env!("VERGEN_RUSTC_LLVM_VERSION");
 
+fn add_common_args(mut cmd: clap::Command) -> clap::Command {
+    let source_help = match cmd.get_name() {
+        "adb" => "Path to backup (inside Android)",
+        _ => "Path to backup (in relation to the path specified in --base-path)",
+    };
+    cmd = cmd
+        .arg(
+            clap::Arg::with_name("SOURCE")
+                .help(source_help)
+                .required(true)
+                .index(1),
+        )
+        .arg(
+            clap::Arg::with_name("STORAGE")
+                .help("Where to save the backups")
+                .required(true)
+                .index(2),
+        )
+        .arg(
+            clap::Arg::with_name("name")
+                .help("Name of the backup. Defaults to the basename of SOURCE.")
+                .takes_value(true)
+                .long("name"),
+        )
+        .arg(
+            clap::Arg::with_name("description")
+                .help("Description of the backup.")
+                .takes_value(true)
+                .long("desc"),
+        )
+        .arg(
+            clap::Arg::with_name("alg")
+                .default_value("SHA256")
+                .takes_value(true)
+                .long("algorithm")
+                .possible_values(&["SHA1", "SHA256", "SHA512"])
+                .help("Selects the hash algorithm"),
+        )
+        .arg(
+            clap::Arg::with_name("skip_list_filename")
+                .action(clap::ArgAction::Append)
+                .long("skip-if-in")
+                .help("Specifies an hb2 output log as a list of files to skip when backing up"),
+        );
+    if cmd.get_name() == "adb" {
+        cmd = cmd.arg(
+            clap::Arg::with_name("adbfs_mount_point")
+                .help("Path where to mount the Android filesystem")
+                .takes_value(true)
+                .long("adbfs-mount-point"),
+        )
+    } else {
+        cmd = cmd.arg(
+            clap::Arg::with_name("base-path")
+                .help("Base path from which the SOURCE is calculated")
+                .default_value("/")
+                .takes_value(true)
+                .long("base-path"),
+        )
+    }
+    cmd
+}
+
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
 
     let long_version: String = format!("\nVersion: {VERSION}\nBuild info: {BUILD_SEMVER} built at {BUILD_TIMESTAMP}\nGit info: {GIT_SEMVER} from commit {GIT_SHA} date {GIT_COMMIT_TIMESTAMP} at branch {GIT_BRANCH}\nRustc info: {RUSTC_CHANNEL} {RUSTC_SEMVER} {RUSTC_HOST_TRIPLE} with LLVM {RUSTC_LLVM_VERSION} (rustc commit {RUSTC_COMMIT_HASH})");
 
-    let matches = clap::App::new("Hash Based Backup tool")
+    let fs_cmd =
+        clap::Command::new("fs").about("Use the regular filesystem to get the files to back up");
+    let adb_cmd = clap::Command::new("adb")
+        .about("Use ADB to get the files to back up from an Android device");
+
+    let fs_cmd = add_common_args(fs_cmd);
+    let adb_cmd = add_common_args(adb_cmd);
+
+    let fs_cmd = fs_cmd.arg(
+        clap::Arg::with_name("no-file-flags")
+            .long("no-file-flags")
+            .takes_value(false)
+            .help("If present, hb2-rs won't even attempt to get the file flags"),
+    );
+
+    let main_cmd = clap::App::new("Hash Based Backup tool")
         .version(VERSION)
         .long_version(long_version.as_str())
         .author(AUTHORS)
         .about(DESCRIPTION)
-        .arg(clap::Arg::with_name("SOURCE")
-            .help("Path to backup")
-            .required(true)
-            .index(1))
-        .arg(clap::Arg::with_name("name")
-            .help("Name of the backup. Defaults to the basename of SOURCE.")
-            .takes_value(true)
-            .long("name"))
-        .arg(clap::Arg::with_name("description")
-            .help("Description of the backup.")
-            .takes_value(true)
-            .long("desc"))
-        .arg(clap::Arg::with_name("STORAGE")
-            .help("Where to save the backups")
-            .required(true)
-            .index(2))
-        .arg(clap::Arg::with_name("ADB PATH PREFIX")
-            .help("Path prefix to add to use for ADB based hashing")
-            .takes_value(true)
-            .long("adb-prefix"))
-        .arg(clap::Arg::with_name("hash-via-adb")
-            .help("Use ADB to hash files instead of doing so locally")
-            .long("hash-via-abd")
-            .takes_value(false))
-        .arg(clap::Arg::with_name("alg")
-            .default_value("SHA256")
-            .takes_value(true)
-            .long("alg")
-            .possible_values(&["SHA1", "SHA256", "SHA512"])
-            .help("Selects the hash algorithm"))
-        .arg(clap::Arg::with_name("skip-if-in")
-            .action(clap::ArgAction::Append)
-            .long("skip-if-in")
-            .help("Specifies an hb2 output log as a list of files to skip when backing up"))
         .arg(clap::Arg::with_name("force-color")
             .long("force-color")
             .takes_value(false)
@@ -97,41 +143,28 @@ fn main() {
             .long("debug")
             .takes_value(false)
             .help("Prints additional debugging info"))
-        .arg(clap::Arg::with_name("no-file-flags")
-            .long("no-file-flags")
-            .takes_value(false)
-            .help("If present, hb2-rs won't even attempt to get the file flags"))
             // .hide_default_value(true)
-        .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
-        .get_matches();
+        .subcommand(fs_cmd)
+        .subcommand(adb_cmd)
+        .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)");
+
+    let matches = main_cmd.get_matches();
+    println!("{:?}", matches);
 
     let force_color = matches.is_present("force-color");
     let debug = matches.is_present("debug");
-    let file_flags = !matches.is_present("no-file-flags");
     log_hack::start_logger(force_color, debug);
     debug!("started log");
 
-    let adb_hashing = matches.is_present("hash-via-adb");
-    let adb_prefix = Path::new(matches.value_of("ADB PATH PREFIX").unwrap_or("/"));
-    let source_path = Path::new(matches.value_of("SOURCE").unwrap());
-    let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
-
-    let alg = match matches
-        .value_of("alg")
-        .expect("failed to get hash algorithm")
-    {
-        "SHA1" => Nid::SHA1,
-        "SHA256" => Nid::SHA256,
-        "SHA512" => Nid::SHA512,
-        alg => panic!("invalid hash algorithm: {}", alg),
+    match matches.subcommand() {
+        Some(("fs", sub_matches)) => sub_command_backup("fs", sub_matches),
+        Some(("adb", sub_matches)) => sub_command_backup("adb", sub_matches),
+        _ => unreachable!("unknown command"),
     };
+}
 
+fn gather_files_to_skip(skip_lists: &Vec<&Path>) -> HashSet<String> {
     let re = Regex::new(r"\s+").unwrap();
-    let skip_lists = matches
-        .get_many::<String>("skip-if-in")
-        .unwrap_or_default()
-        .map(|v| Path::new(v.as_str()))
-        .collect::<Vec<_>>();
     let mut files_to_skip = HashSet::<String>::new();
     for skip_list_path in skip_lists {
         let fp = File::open(skip_list_path).expect("failed to read file passed by --skip-if-in");
@@ -145,29 +178,82 @@ fn main() {
             }
         }
     }
+    files_to_skip
+}
 
-    // TODO: actually use the database
-    database::open_by_dir(storage_path).expect("failed to open db");
-
-    let mut n_errs = 0;
-    let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    do_backup(
-        source_path,
-        source_path,
-        storage_path,
-        alg,
-        file_flags,
-        &mut list,
-        &mut n_errs,
-        adb_hashing,
-        adb_prefix,
-        &files_to_skip,
-    );
-    finish_backup(list);
-
-    if n_errs != 0 {
-        error!("Total errors: {}", n_errs);
+fn parse_alg_opt(matches: &ArgMatches) -> Nid {
+    match matches
+        .value_of("alg")
+        .expect("failed to get hash algorithm")
+    {
+        "SHA1" => Nid::SHA1,
+        "SHA256" => Nid::SHA256,
+        "SHA512" => Nid::SHA512,
+        alg => panic!("invalid hash algorithm: {}", alg),
     }
+}
+
+fn sub_command_backup(main_cmd: &str, matches: &ArgMatches) {
+    let mut file_flags = !matches.is_present("no-file-flags");
+    let logical_source_path = Path::new(matches.value_of("SOURCE").unwrap());
+    let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
+    let skip_lists = matches
+        .get_many::<String>("skip_list_filename")
+        .unwrap_or_default()
+        .map(|v| Path::new(v.as_str()))
+        .collect::<Vec<_>>();
+    let files_to_skip = gather_files_to_skip(&skip_lists);
+    let alg = parse_alg_opt(matches);
+    let mut mount_point: Option<PathBuf> = None;
+
+    if main_cmd == "adb" {
+        // TODO: run adbfs
+        mount_point = match matches.value_of("adb_mount_point") {
+            Some(dir) => Some(Path::new(dir).to_path_buf()),
+            None => Some(TempDir::new().unwrap().keep()),
+        };
+        file_flags = false;
+        let output = Command::new("adbfs")
+            .arg(mount_point.clone().unwrap())
+            .output()
+            .expect("failed to execute adbfs");
+        if output.status.code() != Some(0) {
+            panic!("adbfs failed with exist code {:?}", output.status.code());
+        }
+        let s = match std::str::from_utf8(&output.stdout) {
+            Ok(v) => v,
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+        };
+    }
+    let real_source_path = match main_cmd {
+        "fs" => logical_source_path,
+        "adb" => &mount_point.unwrap().join(logical_source_path),
+        _ => unreachable!(),
+    };
+    println!("{:?}", real_source_path);
+
+    // // TODO: actually use the database
+    // database::open_by_dir(storage_path).expect("failed to open db");
+
+    // let mut n_errs = 0;
+    // let mut list = start_backup(source_path, storage_path, alg).unwrap();
+    // do_backup(
+    //     source_path,
+    //     source_path,
+    //     storage_path,
+    //     alg,
+    //     file_flags,
+    //     &mut list,
+    //     &mut n_errs,
+    //     adb_hashing,
+    //     adb_prefix,
+    //     &files_to_skip,
+    // );
+    // finish_backup(list);
+
+    // if n_errs != 0 {
+    //     error!("Total errors: {}", n_errs);
+    // }
 }
 
 fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io::Error> {
