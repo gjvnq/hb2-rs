@@ -1,5 +1,10 @@
 use tokio::sync::mpsc;
 use anyhow::Error as AnyHowError;
+use clap::{Parser, Subcommand};
+use std::sync::OnceLock;
+use clap::{Command, Arg, ArgAction};
+use url::Url;
+use regex::Regex;
 
 mod utils;
 mod adb_utils;
@@ -31,20 +36,71 @@ fn get_long_version() -> &'static String {
 
 #[tokio::main]
 async fn main() -> Result<(), AnyHowError> {
-    // database::open_by_dir(storage_path).expect("failed to open db");
-    let (tx, mut rx) = mpsc::channel(32);
-    tokio::spawn(async move {
-        adb_quick_scanner("/bin", tx).await.unwrap();
-    });
-    while let Some(message) = rx.recv().await {
-        println!("GOT = {:?}", message);
-    }
-    let (tx2, mut rx2) = mpsc::channel(32);
-    tokio::spawn(async move {
-        adb_full_scanner("/sdcard/Download/Seal", tx2, Some(HashAlg::SHA256)).await.unwrap();
-    });
-    while let Some(message) = rx2.recv().await {
-        println!("GOT = {:?}", message);
-    }
+    let matches = Command::new("Hash Based Backup tool")
+        .version(VERSION)
+        .long_version(get_long_version().as_str())
+        .author(AUTHORS)
+        .about(DESCRIPTION)
+        .arg(Arg::new("SOURCE")
+            .help("Path to backup. Use a scheme use adb:// or file:// to avoid ambiguities.")
+            .required(true)
+            .index(1))
+        .arg(Arg::new("name")
+            .help("Name of the backup. Defaults to the basename of SOURCE.")
+            .action(ArgAction::Set)
+            .long("name"))
+        .arg(Arg::new("description")
+            .help("Description of the backup.")
+            .action(ArgAction::Set)
+            .long("desc"))
+        .arg(Arg::new("STORAGE")
+            .help("Where to save the backups")
+            .required(true)
+            .index(2))
+        .arg(Arg::new("alg")
+            .default_value("SHA256")
+            .action(ArgAction::Set)
+            .long("alg")
+            .value_parser(["MD5", "SHA1", "SHA224", "SHA384", "SHA256", "SHA512"])
+            .help("Selects the hash algorithm"))
+        .arg(Arg::new("force-color")
+            .long("force-color")
+            .action(ArgAction::SetTrue)
+            .help("Forces the use of colours even when STDOUT is redirected"))
+        .arg(Arg::new("debug")
+            .long("debug")
+            .action(ArgAction::SetTrue)
+            .help("Prints additional debugging info"))
+        .arg(Arg::new("no-file-flags")
+            .long("no-file-flags")
+            .action(ArgAction::SetTrue)
+            .help("If present, hb2-rs won't even attempt to get the file flags"))
+        .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
+        .get_matches();
+    println!("{:?}", matches);
+    let source_raw: &String = matches.get_one("SOURCE").unwrap();
+    let pattern = r"^[\w+]+:\/\/";
+    let re = Regex::new(pattern).expect("Invalid regex pattern");
+    let source_raw2 = match re.is_match(source_raw) {
+        true => source_raw.clone(),
+        false => format!("file://{}", source_raw)
+    };
+    let source_url = Url::parse(&source_raw2)?;
+    println!("{:?}", source_url);
+    // // database::open_by_dir(storage_path).expect("failed to open db");
+    // let (tx, mut rx) = mpsc::channel(32);
+    // tokio::spawn(async move {
+    //     adb_quick_scanner("/bin", tx).await.unwrap();
+    // });
+    // while let Some(message) = rx.recv().await {
+    //     println!("GOT = {:?}", message);
+    // }
+    // let (tx2, mut rx2) = mpsc::channel(32);
+    // tokio::spawn(async move {
+    //     adb_full_scanner("/sdcard/Download/Seal", tx2, Some(HashAlg::SHA256)).await.unwrap();
+    // });
+    // while let Some(message) = rx2.recv().await {
+    //     println!("GOT = {:?}", message);
+    // }
     Ok(())
 }
