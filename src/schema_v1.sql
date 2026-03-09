@@ -7,7 +7,7 @@ CREATE TABLE `blobs` (
 );
 
 CREATE TABLE `backups` (
-    `id` INTEGER PRIMARY KEY,
+    `uuid` TEXT PRIMARY KEY,
     `name` TEXT NOT NULL,
     `desc` TEXT NOT NULL,
     `source_dir` TEXT,
@@ -17,17 +17,25 @@ CREATE TABLE `backups` (
 );
 
 CREATE TABLE `files` (
-    `id` INTEGER PRIMARY KEY,
-    `backup_id` INTEGER NOT NULL,
+    `uuid` TEXT PRIMARY KEY,
+    `backup_uuid` TEXT NOT NULL,
+    `parent_uuid` TEXT,
+    `inode` INTEGER,
+    `name` TEXT,
+    `mode` INTEGER,
+    `size` INTEGER,
     `kind` TEXT NOT NULL, -- 'F', 'L', 'D'
-    `hash` BLOB, -- null on directories and links
-    `name` TEXT NOT NULL,
-    `target` TEXT, -- only for links
-    `modified_at` DATE NOT NULL,
-    `uid` INTEGER,
-    `gid` INTEGER,
-    `mode` INTEGER, -- file mode
-    `lsattr` TEXT
+    `uid_num` INTEGER,
+    `gid_num` INTEGER,
+    `uid_str` TEXT,
+    `gid_str` TEXT,
+    `mod_time` DATE NOT NULL,
+    `sec_ctx` TEXT,
+    `lsattr` TEXT,
+    `full_path` TEXT,
+    `target_path` TEXT, -- only used for links
+    `scanned_hash` BLOB, -- null on directories and links
+    `acquired_hash` BLOB, -- null on directories and links
 );
 
 COMMIT;
