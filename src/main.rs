@@ -1,691 +1,266 @@
-#[macro_use]
-extern crate simple_error;
+use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use core::hash;
+use std::process::Stdio;
+use chrono::{DateTime, Utc};
+//use std::error::Error;
+use std::fmt::Debug;
+use tokio::sync::mpsc;
+use anyhow::Error as AnyHowError;
 
-extern crate clap;
-use chrono::{DateTime, SecondsFormat, Utc};
-use e2p_fileflags::FileFlags;
-use std::error::Error;
-use std::fmt::Write as FmtWritter;
-use std::fs;
-use std::fs::File;
-use std::io::Write as IoWriter;
-use std::path::Path;
-use std::path::PathBuf;
-extern crate env_logger;
-use clap::ArgMatches;
-use openssl::hash::{Hasher, MessageDigest};
-use openssl::nid::Nid;
-use regex::Regex;
-use snailquote::{escape, unescape};
-use std::collections::HashSet;
-use std::env;
-use std::io;
-use std::io::BufRead;
-use std::os::linux::fs::MetadataExt;
-use std::process::Command;
-use tempfile::TempDir;
-
-#[macro_use]
-extern crate log;
-
-mod database;
-mod log_hack;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-const DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
-
-const BUILD_TIMESTAMP: &str = env!("VERGEN_BUILD_TIMESTAMP");
-const BUILD_SEMVER: &str = env!("VERGEN_BUILD_SEMVER");
-const GIT_BRANCH: &str = env!("VERGEN_GIT_BRANCH");
-const GIT_COMMIT_TIMESTAMP: &str = env!("VERGEN_GIT_COMMIT_TIMESTAMP");
-const GIT_SEMVER: &str = env!("VERGEN_GIT_SEMVER");
-const GIT_SHA: &str = env!("VERGEN_GIT_SHA");
-const RUSTC_CHANNEL: &str = env!("VERGEN_RUSTC_CHANNEL");
-const RUSTC_HOST_TRIPLE: &str = env!("VERGEN_RUSTC_HOST_TRIPLE");
-const RUSTC_COMMIT_HASH: &str = env!("VERGEN_RUSTC_COMMIT_HASH");
-const RUSTC_SEMVER: &str = env!("VERGEN_RUSTC_SEMVER");
-const RUSTC_LLVM_VERSION: &str = env!("VERGEN_RUSTC_LLVM_VERSION");
-
-fn add_common_args(mut cmd: clap::Command) -> clap::Command {
-    let source_help = match cmd.get_name() {
-        "adb" => "Path to backup (inside Android)",
-        _ => "Path to backup (in relation to the path specified in --base-path)",
-    };
-    cmd = cmd
-        .arg(
-            clap::Arg::with_name("SOURCE")
-                .help(source_help)
-                .required(true)
-                .index(1),
-        )
-        .arg(
-            clap::Arg::with_name("STORAGE")
-                .help("Where to save the backups")
-                .required(true)
-                .index(2),
-        )
-        .arg(
-            clap::Arg::with_name("name")
-                .help("Name of the backup. Defaults to the basename of SOURCE.")
-                .takes_value(true)
-                .long("name"),
-        )
-        .arg(
-            clap::Arg::with_name("description")
-                .help("Description of the backup.")
-                .takes_value(true)
-                .long("desc"),
-        )
-        .arg(
-            clap::Arg::with_name("alg")
-                .default_value("SHA256")
-                .takes_value(true)
-                .long("algorithm")
-                .possible_values(&["SHA1", "SHA256", "SHA512"])
-                .help("Selects the hash algorithm"),
-        )
-        .arg(
-            clap::Arg::with_name("skip_list_filename")
-                .action(clap::ArgAction::Append)
-                .long("skip-if-in")
-                .help("Specifies an hb2 output log as a list of files to skip when backing up"),
-        );
-    if cmd.get_name() == "adb" {
-        cmd = cmd.arg(
-            clap::Arg::with_name("adbfs_mount_point")
-                .help("Path where to mount the Android filesystem")
-                .takes_value(true)
-                .long("adbfs-mount-point"),
-        )
-    } else {
-        cmd = cmd.arg(
-            clap::Arg::with_name("base-path")
-                .help("Base path from which the SOURCE is calculated")
-                .default_value("/")
-                .takes_value(true)
-                .long("base-path"),
-        )
+#[tokio::main]
+async fn main() -> Result<(), AnyHowError> {
+    let (tx, mut rx) = mpsc::channel(32);
+    tokio::spawn(async move {
+        adb_quick_scanner("/bin", tx).await.unwrap();
+    });
+    while let Some(message) = rx.recv().await {
+        println!("GOT = {:?}", message);
     }
-    cmd
+    let (tx2, mut rx2) = mpsc::channel(32);
+    tokio::spawn(async move {
+        adb_full_scanner("/sdcard/Download/Seal", tx2, Some(HashAlg::SHA256)).await.unwrap();
+    });
+    while let Some(message) = rx2.recv().await {
+        println!("GOT = {:?}", message);
+    }
+    Ok(())
 }
 
-fn main() {
-    env::set_var("RUST_BACKTRACE", "1");
-
-    let long_version: String = format!("\nVersion: {VERSION}\nBuild info: {BUILD_SEMVER} built at {BUILD_TIMESTAMP}\nGit info: {GIT_SEMVER} from commit {GIT_SHA} date {GIT_COMMIT_TIMESTAMP} at branch {GIT_BRANCH}\nRustc info: {RUSTC_CHANNEL} {RUSTC_SEMVER} {RUSTC_HOST_TRIPLE} with LLVM {RUSTC_LLVM_VERSION} (rustc commit {RUSTC_COMMIT_HASH})");
-
-    let fs_cmd =
-        clap::Command::new("fs").about("Use the regular filesystem to get the files to back up");
-    let adb_cmd = clap::Command::new("adb")
-        .about("Use ADB to get the files to back up from an Android device");
-
-    let fs_cmd = add_common_args(fs_cmd);
-    let adb_cmd = add_common_args(adb_cmd);
-
-    let fs_cmd = fs_cmd.arg(
-        clap::Arg::with_name("no-file-flags")
-            .long("no-file-flags")
-            .takes_value(false)
-            .help("If present, hb2-rs won't even attempt to get the file flags"),
-    );
-
-    let main_cmd = clap::App::new("Hash Based Backup tool")
-        .version(VERSION)
-        .long_version(long_version.as_str())
-        .author(AUTHORS)
-        .about(DESCRIPTION)
-        .arg(clap::Arg::with_name("force-color")
-            .long("force-color")
-            .takes_value(false)
-            .help("Forces the use of colours even when STDOUT is redirected"))
-        .arg(clap::Arg::with_name("debug")
-            .long("debug")
-            .takes_value(false)
-            .help("Prints additional debugging info"))
-            // .hide_default_value(true)
-        .subcommand(fs_cmd)
-        .subcommand(adb_cmd)
-        .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)");
-
-    let matches = main_cmd.get_matches();
-    println!("{:?}", matches);
-
-    let force_color = matches.is_present("force-color");
-    let debug = matches.is_present("debug");
-    log_hack::start_logger(force_color, debug);
-    debug!("started log");
-
-    match matches.subcommand() {
-        Some(("fs", sub_matches)) => sub_command_backup("fs", sub_matches),
-        Some(("adb", sub_matches)) => sub_command_backup("adb", sub_matches),
-        _ => unreachable!("unknown command"),
-    };
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum FileKind {
+    FILE,
+    DIRECTORY,
+    LINK
 }
 
-fn gather_files_to_skip(skip_lists: &Vec<&Path>) -> HashSet<String> {
-    let re = Regex::new(r"\s+").unwrap();
-    let mut files_to_skip = HashSet::<String>::new();
-    for skip_list_path in skip_lists {
-        let fp = File::open(skip_list_path).expect("failed to read file passed by --skip-if-in");
-        let lines = io::BufReader::new(fp).lines();
-        for line in lines {
-            let line = line.expect("");
-            let parts: Vec<&str> = re.splitn(&line, 8).collect();
-            if parts[0] == "F" {
-                let filename = unescape(parts[7]).expect("Failed to unescape");
-                files_to_skip.insert(filename);
-            }
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum HashAlg {
+    MD5,
+    SHA1,
+    SHA224,
+    SHA256,
+    SHA384,
+    SHA512,
+}
+
+impl HashAlg {
+    fn shell_command(&self) -> &'static str {
+        match self {
+            HashAlg::MD5 => "md5sum",
+            HashAlg::SHA1 => "sha1sum",
+            HashAlg::SHA224 => "sha224sum",
+            HashAlg::SHA256 => "sha256sum",
+            HashAlg::SHA384 => "sha384sum",
+            HashAlg::SHA512 => "sha512sum",
         }
     }
-    files_to_skip
 }
 
-fn parse_alg_opt(matches: &ArgMatches) -> Nid {
-    match matches
-        .value_of("alg")
-        .expect("failed to get hash algorithm")
-    {
-        "SHA1" => Nid::SHA1,
-        "SHA256" => Nid::SHA256,
-        "SHA512" => Nid::SHA512,
-        alg => panic!("invalid hash algorithm: {}", alg),
-    }
+const ASCII_US: char = '\x1F';
+const ASCII_US_BYTE: u8 = b'\x1F';
+const ASCII_NULL: char = '\x00';
+const ASCII_NULL_BYTE: u8 = b'\x00';
+const FIND_ASCII_NULL: &str = "\\\\0";
+const FIND_INODE: &str = "%i";
+const FIND_SIZE: &str = "%s";
+const FIND_MODE_OCTAL: &str = "%m";
+const FIND_MODE_TEXT: &str = "%M";
+const FIND_UID_NUM: &str = "%U";
+const FIND_UID_TEXT: &str = "%u";
+const FIND_GID_NUM: &str = "%G";
+const FIND_GID_TEXT: &str = "%g";
+const FIND_MOD_TIME: &str = "%T@";
+const FIND_SEC_CTX: &str = "%Z";
+const FIND_PATH: &str = "%p";
+const FIND_LINK_TO: &str = "%l";
+const FIND_ASCII_NEW_LINE: &str = "\\\\n";
+
+trait AdbLine: Debug + Sized {
+    fn parse(line: &str) -> Result<Self, AnyHowError>;
+    fn find_printf(extra_cmd: bool) -> String;
 }
 
-fn sub_command_backup(main_cmd: &str, matches: &ArgMatches) {
-    let mut file_flags = !matches.is_present("no-file-flags");
-    let logical_source_path = Path::new(matches.value_of("SOURCE").unwrap());
-    let storage_path = Path::new(matches.value_of("STORAGE").unwrap());
-    let skip_lists = matches
-        .get_many::<String>("skip_list_filename")
-        .unwrap_or_default()
-        .map(|v| Path::new(v.as_str()))
-        .collect::<Vec<_>>();
-    let files_to_skip = gather_files_to_skip(&skip_lists);
-    let alg = parse_alg_opt(matches);
-    let mut mount_point: Option<PathBuf> = None;
-
-    if main_cmd == "adb" {
-        // TODO: run adbfs
-        mount_point = match matches.value_of("adb_mount_point") {
-            Some(dir) => Some(Path::new(dir).to_path_buf()),
-            None => Some(TempDir::new().unwrap().keep()),
-        };
-        file_flags = false;
-        let output = Command::new("adbfs")
-            .arg(mount_point.clone().unwrap())
-            .output()
-            .expect("failed to execute adbfs");
-        if output.status.code() != Some(0) {
-            panic!("adbfs failed with exist code {:?}", output.status.code());
-        }
-        let s = match std::str::from_utf8(&output.stdout) {
-            Ok(v) => v,
-            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-        };
-    }
-    let real_source_path = match main_cmd {
-        "fs" => logical_source_path,
-        "adb" => &mount_point.unwrap().join(logical_source_path),
-        _ => unreachable!(),
-    };
-    println!("{:?}", real_source_path);
-
-    // // TODO: actually use the database
-    // database::open_by_dir(storage_path).expect("failed to open db");
-
-    // let mut n_errs = 0;
-    // let mut list = start_backup(source_path, storage_path, alg).unwrap();
-    // do_backup(
-    //     source_path,
-    //     source_path,
-    //     storage_path,
-    //     alg,
-    //     file_flags,
-    //     &mut list,
-    //     &mut n_errs,
-    //     adb_hashing,
-    //     adb_prefix,
-    //     &files_to_skip,
-    // );
-    // finish_backup(list);
-
-    // if n_errs != 0 {
-    //     error!("Total errors: {}", n_errs);
-    // }
+#[derive(Debug, Clone)]
+struct AdbQuickLine {
+    inode: u64,
+    size: u64,
+    kind: FileKind,
 }
 
-fn start_backup(source: &Path, storage: &Path, alg: Nid) -> Result<File, std::io::Error> {
-    trace!("start_backup - begin");
-    let now_str = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-    debug!("Considering now as {}", now_str);
-    let list_path = storage.join(now_str + ".txt");
-    debug!("Backup list path: {:?}", list_path);
+impl AdbLine for AdbQuickLine {
+    fn parse(line: &str) -> Result<Self, AnyHowError> {
+        let mut split_iter = line.split(ASCII_US);
+        let inode = (split_iter.next().expect("missing inode number")).parse::<u64>()?;
+        let size = (split_iter.next().expect("missing size")).parse::<u64>()?;
+        let mode_text = (split_iter.next().expect("missing mode text")).to_string();
 
-    let mut list = File::create(&list_path)?;
-    let alg_str = alg.short_name().unwrap();
-    trace!("Created file {:?}", list_path);
-    writeln!(list, "# SOURCE: {}", source.to_str().unwrap())?;
-    writeln!(list, "# HASH:   {}", alg_str)?;
-    list.sync_all()?;
-
-    let mut path_backup_parent = PathBuf::from(storage);
-    path_backup_parent.push(alg_str);
-    if !path_backup_parent.exists() {
-        match fs::create_dir(&path_backup_parent) {
-            Ok(_) => {}
-            Err(err) => {
-                error!(
-                    "Failed to create directory {:?}: {}",
-                    &path_backup_parent, err
-                );
-                return Err(err);
-            }
+        let kind = match mode_text.chars().next().unwrap() {
+            'd' => FileKind::DIRECTORY,
+            '-' => FileKind::FILE,
+            'l' => FileKind::LINK,
+            _ => unreachable!()
         };
+        Ok(AdbQuickLine { inode, size, kind })
     }
 
-    trace!("start_backup - end");
-    Ok(list)
-}
-
-fn lsattr2str(flags: e2p_fileflags::Flags) -> String {
-    use e2p_fileflags::Flags;
-    let mut ans = String::new();
-    let flag_chars = [
-        (Flags::SECRM, "s"),
-        (Flags::UNRM, "u"),
-        (Flags::SYNC, "S"),
-        (Flags::DIRSYNC, "D"),
-        (Flags::IMMUTABLE, "i"),
-        (Flags::APPEND, "a"),
-        (Flags::NODUMP, "d"),
-        (Flags::NOATIME, "A"),
-        (Flags::COMPR, "c"),
-        (Flags::ENCRYPT, "E"),
-        (Flags::JOURNAL_DATA, "j"),
-        (Flags::INDEX, "I"),
-        (Flags::NOTAIL, "t"),
-        (Flags::TOPDIR, "T"),
-        (Flags::EXTENTS, "e"),
-        (Flags::NOCOW, "C"),
-        (Flags::CASEFOLD, "F"),
-        (Flags::INLINE_DATA, "N"),
-        (Flags::PROJINHERIT, "P"),
-        (Flags::VERITY, "V"),
-    ];
-    for pair in &flag_chars {
-        if flags.contains(pair.0) {
-            ans.push_str(pair.1);
+    fn find_printf(extra_cmd: bool) -> String {
+        let mut printf = String::from("");
+        printf.push_str(FIND_INODE);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_SIZE);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_MODE_TEXT);
+        if extra_cmd {
+            printf.push(ASCII_US);
         } else {
-            ans.push_str("-");
+            printf.push_str(FIND_ASCII_NEW_LINE);
         }
+        return printf;
     }
-    return ans;
 }
 
-fn get_backup_path_by_hash(storage: &Path, alg: Nid, hash: &str) -> PathBuf {
-    trace!(
-        "get_backup_path_by_hash (storage: {:?}, alg: {:?}, hash: {:?})",
-        storage,
-        alg,
-        hash
-    );
-    let mut ans = PathBuf::from(storage);
-    let alg_name = alg.short_name().unwrap();
-    ans.push(alg_name);
-    ans.push(&hash[0..2]);
-    ans.push(hash);
-    trace!("get_backup_path_by_hash return {:?}", ans);
-    return ans;
+#[derive(Debug, Clone)]
+struct AdbFullLine {
+    inode: u64,
+    size: u64,
+    kind: FileKind,
+    mode_num: u16,
+    mode_text: String,
+    uid_num: u64,
+    uid_text: String,
+    gid_num: u64,
+    gid_text: String,
+    mod_time: DateTime<Utc>,
+    sec_ctx: String,
+    full_path: String,
+    link_path: Option<String>,
+    hash_val: Option<String>,
 }
 
-fn hash_file_directly(
-    path: &Path,
-    path_striped: &str,
-    alg: Nid,
-    metadata: &fs::Metadata,
-    n_errs: &mut i32,
-) -> Result<String, Box<dyn Error>> {
-    let mut file = match fs::File::open(&path) {
-        Ok(v) => v,
-        Err(err) => {
-            error!("Failed to open file {}: {}", path_striped, err);
-            *n_errs += 1;
-            return Err(Box::new(err));
-        }
-    };
-    let md = MessageDigest::from_nid(alg).unwrap();
-    let mut hasher = Hasher::new(md)?;
-    let n = match io::copy(&mut file, &mut hasher) {
-        Ok(v) => v,
-        Err(err) => {
-            error!("Failed hash file {}: {}", path_striped, err);
-            *n_errs += 1;
-            return Err(Box::new(err));
-        }
-    };
-    let hash = hasher.finish()?;
+impl AdbLine for AdbFullLine {
+    fn parse(line: &str) -> Result<Self, AnyHowError> {
+        let mut split_iter = line.split(ASCII_US);
+        let inode = (split_iter.next().expect("missing inode number")).parse::<u64>()?;
+        let size = (split_iter.next().expect("missing size")).parse::<u64>()?;
+        let mode_num = u16::from_str_radix(split_iter.next().expect("missing mode octal"), 8)?;
+        let mode_text = (split_iter.next().expect("missing mode text")).to_string();
+        let uid_num = (split_iter.next().expect("missing user id")).parse::<u64>()?;
+        let uid_text = (split_iter.next().expect("missing user name")).to_string();
+        let gid_num = (split_iter.next().expect("missing group id")).parse::<u64>()?;
+        let gid_text = (split_iter.next().expect("missing group name")).to_string();
+        let mod_time_str = split_iter.next().expect("missing modification time");
+        let sec_ctx = (split_iter.next().expect("missing security context")).to_string();
+        let full_path = (split_iter.next().expect("missing file path")).to_string();
+        let link_path = (split_iter.next().expect("missing link to path")).to_string();
 
-    // Check size and consistency
-    let size = metadata.len();
-    if size != n {
-        *n_errs += 1;
-        let tmp = format!(
-            "Number of hashed bytes doesn't match the file size: {} and {}, respectively",
-            n, size
-        );
-        error!("{}", tmp);
-        bail!(tmp)
-    }
-
-    return Ok(hex::encode(hash));
-}
-
-fn hash_file_via_adb(
-    path_striped: &str,
-    alg: Nid,
-    adb_prefix: &Path,
-    n_errs: &mut i32,
-) -> Result<String, Box<dyn Error>> {
-    let path_in_android = adb_prefix.join(path_striped);
-    let (hash_cmd, hash_len) = match alg {
-        Nid::SHA512 => ("sha512sum", 128),
-        Nid::SHA256 => ("sha256sum", 64),
-        Nid::SHA1 => ("sha1sum", 40),
-        alg => panic!("invalid algorithm: {:?}", alg),
-    };
-    let core_cmd = format!("{} {}", hash_cmd, path_in_android.to_str().unwrap());
-    let output = Command::new("adb")
-        .arg("shell")
-        .arg(core_cmd.clone())
-        .output()
-        .expect("failed to execute process");
-    let s = match std::str::from_utf8(&output.stdout) {
-        Ok(v) => v,
-        Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-    };
-    if s.len() < hash_len {
-        *n_errs += 1;
-        let tmp = format!("hash output is too short: {:?}", s);
-        error!("{}", tmp);
-        error!("core_cmd = {}", core_cmd);
-        bail!(tmp)
-    }
-    let hash = &s[..hash_len];
-    return Ok(hash.to_string());
-}
-
-fn backup_single_file(
-    path: &Path,
-    path_striped: &str,
-    storage: &Path,
-    alg: Nid,
-    list: &mut File,
-    metadata: fs::Metadata,
-    mod_date: &str,
-    perm: &str,
-    n_errs: &mut i32,
-    adb_hashing: bool,
-    adb_prefix: &Path,
-) -> Result<(), Box<dyn Error>> {
-    //  Hash file
-    let hash = match adb_hashing {
-        false => hash_file_directly(path, path_striped, alg, &metadata, n_errs)?,
-        true => hash_file_via_adb(path_striped, alg, adb_prefix, n_errs)?,
-    };
-
-    // Check if backuped file already exists
-    let size = metadata.len();
-    let path_backup = get_backup_path_by_hash(storage, alg, &hash);
-    let mut should_copy = false;
-    if path_backup.exists() {
-        debug!("File {:?} already exists", path_backup);
-        // check size
-        let metadata = match fs::metadata(&path_backup) {
-            Ok(v) => v,
-            Err(err) => {
-                *n_errs += 1;
-                error!("Failed to get metadata for {:?}: {}", path_backup, err);
-                return Err(Box::new(err));
-            }
+        let mut mod_time_split_iter = mod_time_str.split('.');
+        let mod_time_seconds = mod_time_split_iter.next().expect("missing seconds part in modification time").parse::<i64>()?;
+        let mod_time_nanoseconds = match mod_time_split_iter.next() {
+            Some(ns_chunk) => ns_chunk.parse::<u32>()?,
+            None => 0
         };
-        let backuped_size = metadata.len();
-        if size == backuped_size {
-            debug!("File {:?} has the correct size: {}", path_backup, size);
-        } else if backuped_size > size {
-            error!("Files {:?} and {:?} are supposed to have same hash, but the latter is larger than the first. The second file HAS NOT been overwritten.", path_striped, path_backup);
-            *n_errs += 1;
-        } else if backuped_size < size {
-            warn!("Files {:?} and {:?} are supposed to have same hash, but the latter is smaller than the first. This looks like an interrupted copy. The second file will be overwritten.", path_striped, path_backup);
-            should_copy = true;
-        }
-    } else {
-        debug!("File does not {:?} exist", path_backup);
-        should_copy = true;
-    }
+        let mod_time = DateTime::from_timestamp(mod_time_seconds, mod_time_nanoseconds).unwrap();
 
-    if should_copy {
-        // Check if parent folder exist
-        let path_backup_parent = path_backup.as_path().parent().unwrap();
-        if !path_backup_parent.exists() {
-            match fs::create_dir(path_backup_parent) {
-                Ok(_) => {}
-                Err(err) => {
-                    *n_errs += 1;
-                    error!(
-                        "Failed to create directory {:?}: {}",
-                        path_backup_parent, err
-                    );
-                    return Err(Box::new(err));
-                }
-            };
-        }
-
-        match fs::copy(&path, &path_backup) {
-            Ok(_) => {}
-            Err(err) => {
-                error!(
-                    "Failed to copy file {:?} to {:?}: {}",
-                    path, path_backup, err
-                );
-                *n_errs += 1;
-                return Err(Box::new(err));
-            }
+        let hash_raw_str = match split_iter.next() {
+            Some(v) => Some(v.split(" ").next().unwrap().to_string()),
+            None => None,
         };
-    }
 
-    // Write
-    writeln!(
-        list,
-        "F {:12} {} {} {} {}",
-        size, mod_date, perm, hash, path_striped
-    )?;
-
-    return Ok(());
-}
-
-fn do_item(
-    base_source: &Path,
-    storage: &Path,
-    item_path: &Path,
-    alg: Nid,
-    file_flags: bool,
-    list: &mut File,
-    n_errs: &mut i32,
-    adb_hashing: bool,
-    adb_prefix: &Path,
-    files_to_skip: &HashSet<String>,
-) -> Result<(), Box<dyn Error>> {
-    let path_striped = item_path
-        .strip_prefix(base_source)
-        .unwrap_or(item_path)
-        .to_str()
-        .unwrap();
-    let path_quoted = escape(path_striped);
-    debug!("Processing {}", path_quoted);
-
-    let metadata = match fs::symlink_metadata(item_path) {
-        Ok(v) => v,
-        Err(err) => {
-            error!("Failed to get metadata for {}: {}", path_quoted, err);
-            return Err(Box::new(err));
-        }
-    };
-    let mod_date =
-        DateTime::<Utc>::from(metadata.modified()?).to_rfc3339_opts(SecondsFormat::Millis, true);
-    let mut perm = String::new();
-    let lsattr: String = match file_flags {
-        true => match item_path.flags() {
-            Ok(flags) => lsattr2str(flags),
-            Err(err) => {
-                warn!("Failed to get lsattr for {}: {}", path_quoted, err);
-                "????????????????????".to_string()
-            }
-        },
-        false => "????????????????????".to_string(),
-    };
-    write!(
-        perm,
-        "{}:{} {:o} {}",
-        metadata.st_uid(),
-        metadata.st_gid(),
-        metadata.st_mode(),
-        lsattr
-    )?;
-
-    if metadata.file_type().is_symlink() {
-        debug!("{} is a link", path_quoted);
-        let target_path = match item_path.read_link() {
-            Ok(v) => v,
-            Err(err) => {
-                error!("Failed to read {:?} as a symlink: {}", item_path, err);
-                return Err(Box::new(err));
-            }
+        let kind = match mode_text.chars().next().unwrap() {
+            'd' => FileKind::DIRECTORY,
+            '-' => FileKind::FILE,
+            'l' => FileKind::LINK,
+            _ => unreachable!()
         };
-        if target_path.starts_with(base_source) {
-            // If the link targets something inside the base_source, just record the link and don't even read the file as the target will be found separately.
-            let target_path_quoted =
-                escape(item_path.strip_prefix(&target_path)?.to_str().unwrap());
-            writeln!(
-                list,
-                "L {} {} {} -> {}",
-                mod_date, perm, path_quoted, target_path_quoted
-            )?;
+        let link_path = if link_path.len() != 0 || kind == FileKind::LINK {
+            Some(link_path)
         } else {
-            info!("{} is an EXTERNAL link to {:?}. This link will be followed and its contents backed up", path_quoted, target_path);
-            writeln!(
-                list,
-                "L {} {} {} -> {}",
-                mod_date,
-                perm,
-                path_quoted,
-                escape(target_path.to_str().unwrap())
-            )?;
-            do_item(
-                base_source,
-                storage,
-                &target_path,
-                alg,
-                file_flags,
-                list,
-                n_errs,
-                adb_hashing,
-                adb_prefix,
-                files_to_skip,
-            )?;
-        }
-    } else if metadata.file_type().is_dir() {
-        // Recursion time!
-        debug!("{} is a directory", path_quoted);
-        writeln!(list, "D {} {} {}", mod_date, perm, path_quoted)?;
-        do_backup(
-            base_source,
-            &item_path,
-            storage,
-            alg,
-            file_flags,
-            list,
-            n_errs,
-            adb_hashing,
-            adb_prefix,
-            files_to_skip,
-        );
-    } else if metadata.file_type().is_file() {
-        debug!("{} is a file", path_quoted);
-        if files_to_skip.contains(path_striped) {
-            debug!(
-                "skipping {} because it is on a list of already backed up files",
-                path_quoted
-            );
-        } else {
-            backup_single_file(
-                &item_path,
-                &path_quoted,
-                storage,
-                alg,
-                list,
-                metadata,
-                &mod_date,
-                &perm,
-                n_errs,
-                adb_hashing,
-                adb_prefix,
-            )?;
-        }
-    } else {
-        unimplemented!("File type {:?} is not supported", metadata.file_type());
-    }
-    return Ok(());
-}
-
-fn do_backup(
-    base_source: &Path,
-    source: &Path,
-    storage: &Path,
-    alg: Nid,
-    file_flags: bool,
-    list: &mut File,
-    n_errs: &mut i32,
-    adb_hashing: bool,
-    adb_prefix: &Path,
-    files_to_skip: &HashSet<String>,
-) {
-    trace!("on  {:?}", source);
-    let entries = match fs::read_dir(source) {
-        Ok(e) => e,
-        Err(err) => {
-            error!("{}", err);
-            *n_errs += 1;
-            trace!("end {:?}", source);
-            return;
-        }
-    };
-    for entry in entries {
-        let entry = entry.unwrap();
-        let item_path = entry.path();
-        match do_item(
-            base_source,
-            storage,
-            &item_path,
-            alg,
-            file_flags,
-            list,
-            n_errs,
-            adb_hashing,
-            adb_prefix,
-            files_to_skip,
-        ) {
-            Err(err) => {
-                *n_errs += 1;
-                error!("Unexpected error on {:?}: {}", item_path, err);
-            }
-            Ok(_) => {}
+            None
         };
+        Ok(AdbFullLine { inode, size, kind, mode_num, mode_text, uid_num, uid_text, gid_num, gid_text, mod_time, sec_ctx, full_path, link_path: link_path, hash_val: hash_raw_str })
     }
-    trace!("end {:?}", source);
+
+    fn find_printf(extra_cmd: bool) -> String {
+        let mut printf = String::from("");
+        printf.push_str(FIND_INODE);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_SIZE);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_MODE_OCTAL);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_MODE_TEXT);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_UID_NUM);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_UID_TEXT);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_GID_NUM);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_GID_TEXT);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_MOD_TIME);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_SEC_CTX);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_PATH);
+        printf.push(ASCII_US);
+        printf.push_str(FIND_LINK_TO);
+        if extra_cmd {
+            printf.push(ASCII_US);
+        } else {
+            printf.push_str(FIND_ASCII_NEW_LINE);
+        }
+        return printf;
+    }
 }
 
-fn finish_backup(list: File) {
-    list.sync_data().unwrap();
+async fn adb_quick_scanner(base_path: &str, tx: mpsc::Sender<AdbQuickLine>) -> Result<(), AnyHowError> {
+    adb_scanner::<AdbQuickLine>(base_path, tx, None, None).await
+}
+
+async fn adb_full_scanner(base_path: &str, tx: mpsc::Sender<AdbFullLine>, hash_alg: Option<HashAlg>) -> Result<(), AnyHowError> {
+    adb_scanner::<AdbFullLine>(base_path, tx, hash_alg, None).await
+}
+
+async fn adb_scanner<AdbLineT: AdbLine>(base_path: &str, tx: mpsc::Sender<AdbLineT>, hash_alg: Option<HashAlg>, max_depth: Option<i32>) -> Result<(), AnyHowError> {
+    let find_printf = AdbLineT::find_printf(hash_alg.is_some());
+    let mut max_depth_str: String;
+
+    let mut cmd_parts = Vec::from(["shell", "find", "-H", base_path]);
+
+    if let Some(max_depth) = max_depth {
+        cmd_parts.push("-maxdepth");
+        max_depth_str = format!("{}", max_depth);
+        cmd_parts.push(&max_depth_str);
+    }
+
+    cmd_parts.push("-printf");
+    cmd_parts.push(&find_printf);
+
+    if let Some(hash_alg) = hash_alg {
+        cmd_parts.push("-exec");
+        cmd_parts.push(hash_alg.shell_command());
+        cmd_parts.push("{}");
+        cmd_parts.push("\\;");
+    }
+
+    let mut child = Command::new("adb")
+        .args(cmd_parts)
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child.stdout.take().expect("Failed to open stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next_line().await? {
+        let adb_line = AdbLineT::parse(&line);
+        if let Ok(adb_line) = adb_line {
+            tx.send(adb_line).await;
+        } else {
+            println!("{}", line);
+            println!("adb_line error: {:?}", adb_line.unwrap_err())
+        }
+    }
+    Ok(())
 }
