@@ -2,7 +2,7 @@ use rusqlite::{Connection, OpenFlags, Result as SQLResult};
 use std::path::Path;
 
 pub fn open_by_dir(dirpath: &Path) -> SQLResult<Connection> {
-    let filepath = dirpath.join("hb2-rs.sqlite");
+    let filepath = dirpath.join("hb2-rs.dev.sqlite");
     open_by_path(filepath.as_path())
 }
 
