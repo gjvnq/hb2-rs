@@ -1,14 +1,17 @@
 use tokio::sync::mpsc;
 use anyhow::Error as AnyHowError;
 use clap::{Parser, Subcommand};
-use std::{os::linux::raw, sync::OnceLock};
+use std::sync::OnceLock;
+use std::collections::HashSet;
 use clap::{Command, Arg, ArgAction, ArgMatches};
 use url::Url;
 use regex::Regex;
+use std::path::{Path, PathBuf};
 
 mod utils;
 mod adb_utils;
-use utils::HashAlg;
+mod find_utils;
+use utils::{HashAlg, UrlLike};
 use adb_utils::{adb_quick_scanner, adb_full_scanner};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,6 +63,10 @@ async fn main() -> Result<(), AnyHowError> {
             .long("alg")
             .value_parser(["MD5", "SHA1", "SHA224", "SHA384", "SHA256", "SHA512"])
             .help("Selects the hash algorithm"))
+        .arg(Arg::new("exclude")
+            .action(ArgAction::Append)
+            .long("exclude")
+            .help("Specifies a directory to skip while backing up"))
         .arg(Arg::new("force-color")
             .long("force-color")
             .action(ArgAction::SetTrue)
@@ -70,7 +77,7 @@ async fn main() -> Result<(), AnyHowError> {
             .help("Prints additional debugging info"))
         .arg(Arg::new("no-file-flags")
             .long("no-file-flags")
-            .action(ArgAction::SetTrue)
+            .action(ArgAction::SetFalse)
             .help("If present, hb2-rs won't even attempt to get the file flags"));
 
     let verify_blobs_cmd = Command::new("verify-blobs")
@@ -99,65 +106,56 @@ async fn main() -> Result<(), AnyHowError> {
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents `None`"),
     };
 
-    // database::open_by_dir(storage_path).expect("failed to open db");
-
-    // // database::open_by_dir(storage_path).expect("failed to open db");
-    // let (tx, mut rx) = mpsc::channel(32);
-    // tokio::spawn(async move {
-    //     adb_quick_scanner("/bin", tx).await.unwrap();
-    // });
-    // while let Some(message) = rx.recv().await {
-    //     println!("GOT = {:?}", message);
-    // }
-    // let (tx2, mut rx2) = mpsc::channel(32);
-    // tokio::spawn(async move {
-    //     adb_full_scanner("/sdcard/Download/Seal", tx2, Some(HashAlg::SHA256)).await.unwrap();
-    // });
-    // while let Some(message) = rx2.recv().await {
-    //     println!("GOT = {:?}", message);
-    // }
     Ok(())
-}
-
-#[derive(Debug)]
-enum UrlLike {
-    File(String),
-    ADB(String),
-    HTTP(Url),
-    FTP(Url),
-    SSH(Url),
-}
-
-impl UrlLike {
-    fn parse(raw_url: &str) -> Result<UrlLike, AnyHowError> {
-        let pattern = r"^([\w+]+):\/\/(.+)";
-        let re = Regex::new(pattern).expect("Invalid regex pattern");
-        if let Some(caps) = re.captures(raw_url) {
-            let scheme = &caps[1];
-            let main_part = &caps[2];
-            if scheme == "adb" || scheme == "adbfs" || scheme == "android" {
-                return Ok(UrlLike::ADB(main_part.to_string()));
-            } else if scheme == "http" || scheme == "https" {
-                return Ok(UrlLike::HTTP(Url::parse(raw_url)?));
-            } else if scheme == "ftp" || scheme == "ftps" {
-                return Ok(UrlLike::HTTP(Url::parse(raw_url)?));
-            } else if scheme == "ssh" || scheme == "sshfs" {
-                return Ok(UrlLike::SSH(Url::parse(raw_url)?));
-            } else if scheme == "" || scheme == "file" {
-                return Ok(UrlLike::File(main_part.to_string()));
-            } else {
-                unreachable!("unexpected URL scheme");
-            }
-        } else {
-            return Ok(UrlLike::File(raw_url.to_string()));
-        }
-    }
 }
 
 async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
     println!("{:?}", sub_matches);
     let source_raw: &String = sub_matches.get_one("SOURCE").unwrap();
     let source = UrlLike::parse(source_raw)?;
-    println!("{:?}", source);
+    println!("source={:?}", source);
+    let storage_path = PathBuf::from(sub_matches.get_one::<String>("STORAGE").unwrap());
+    println!("storage_path={:?}", storage_path);
+    let file_flags = sub_matches.get_flag("no-file-flags");
+    println!("file_flags={:?}", file_flags);
+    let excludes = sub_matches
+    .get_many::<String>("exclude")
+    .unwrap_or_default()
+    .map(|v| PathBuf::from(v.as_str()))
+    .collect::<HashSet<_>>();
+    println!("excludes={:?}", excludes);
+
+    // database::open_by_dir(storage_path).expect("failed to open db");
+
+    match source {
+        UrlLike::ADB(source_path) => main_backup_adb(&source_path, &storage_path, excludes).await,
+        _ => unreachable!()
+    }
+}
+
+async fn main_backup_adb(source: &Path, storage: &Path, excludes: HashSet<PathBuf>) -> Result<(), AnyHowError> {
+    // database::open_by_dir(storage_path).expect("failed to open db");
+    let (tx1, mut rx1) = mpsc::channel(32);
+    let source1 = source.to_path_buf();
+    tokio::spawn(async move {
+        adb_quick_scanner(&source1, Some(excludes), tx1).await.unwrap();
+    });
+    // let (tx2, mut rx2) = mpsc::channel(32);
+    // tokio::spawn(async move {
+    //     filter_find_lines(excludes, rx1, tx2).await;
+    // });
+    while let Some(message) = rx1.recv().await {
+        println!("GOT = {:?}", message);
+    }
+    // let (tx3, mut rx3) = mpsc::channel(32);
+    // let source2 = source.to_path_buf();
+    // tokio::spawn(async move {
+    //     adb_full_scanner(&source2, tx3, Some(HashAlg::SHA256)).await.unwrap();
+    // });
+    // while let Some(message) = rx3.recv().await {
+    //     println!("GOT = {:?}", message);
+    // }
+    // open_db_by_dir
     Ok(())
+
 }

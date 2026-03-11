@@ -1,9 +1,9 @@
 use rusqlite::{Connection, OpenFlags, Result as SQLResult};
 use std::path::Path;
 
-pub fn open_by_dir(dirpath: &Path) -> SQLResult<Connection> {
+pub fn open_db_by_dir(dirpath: &Path) -> SQLResult<Connection> {
     let filepath = dirpath.join("hb2-rs.dev.sqlite");
-    open_by_path(filepath.as_path())
+    open_db_by_path(filepath.as_path())
 }
 
 fn schema_upgrade_v1(conn: &Connection) -> SQLResult<()> {
@@ -13,7 +13,7 @@ fn schema_upgrade_v1(conn: &Connection) -> SQLResult<()> {
     Ok(())
 }
 
-fn open_by_path(filepath: &Path) -> SQLResult<Connection> {
+fn open_db_by_path(filepath: &Path) -> SQLResult<Connection> {
     let filepath_str = filepath.to_str().expect("filepath should be valid UTF-8");
     debug!("Opening database at {}", filepath_str);
     let conn = Connection::open_with_flags(
