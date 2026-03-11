@@ -1,13 +1,13 @@
+use crate::utils::{FileKind, HashAlg};
 use anyhow::Error as AnyHowError;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use std::process::Stdio;
-use crate::utils::{HashAlg, FileKind};
 use chrono::{DateTime, Utc};
-use tokio::sync::mpsc;
-use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc;
 
 const ASCII_US: char = '\x1F';
 const ASCII_US_BYTE: u8 = b'\x1F';
@@ -68,13 +68,43 @@ impl FindLineCoreTrait for FindLineGeneric {
 
 impl From<FindLineMinimal> for FindLineGeneric {
     fn from(src: FindLineMinimal) -> Self {
-        FindLineGeneric { inode: Some(src.inode), size: src.size, kind: src.kind, mode_num: None, mode_text: None, uid_num: None, uid_text: None, gid_num: None, gid_text: None, mod_time: None, sec_ctx: None, full_path: src.full_path, link_path: None, hash_val: None }
+        FindLineGeneric {
+            inode: Some(src.inode),
+            size: src.size,
+            kind: src.kind,
+            mode_num: None,
+            mode_text: None,
+            uid_num: None,
+            uid_text: None,
+            gid_num: None,
+            gid_text: None,
+            mod_time: None,
+            sec_ctx: None,
+            full_path: src.full_path,
+            link_path: None,
+            hash_val: None,
+        }
     }
 }
 
 impl From<FindLineADB> for FindLineGeneric {
     fn from(src: FindLineADB) -> Self {
-        FindLineGeneric { inode: Some(src.inode), size: src.size, kind: src.kind, mode_num: Some(src.mode_num), mode_text: Some(src.mode_text), uid_num: Some(src.uid_num), uid_text: Some(src.uid_text), gid_num: Some(src.gid_num), gid_text: Some(src.gid_text), mod_time: Some(src.mod_time), sec_ctx: Some(src.sec_ctx), full_path: src.full_path, link_path: src.link_path, hash_val: src.hash_val }
+        FindLineGeneric {
+            inode: Some(src.inode),
+            size: src.size,
+            kind: src.kind,
+            mode_num: Some(src.mode_num),
+            mode_text: Some(src.mode_text),
+            uid_num: Some(src.uid_num),
+            uid_text: Some(src.uid_text),
+            gid_num: Some(src.gid_num),
+            gid_text: Some(src.gid_text),
+            mod_time: Some(src.mod_time),
+            sec_ctx: Some(src.sec_ctx),
+            full_path: src.full_path,
+            link_path: src.link_path,
+            hash_val: src.hash_val,
+        }
     }
 }
 
@@ -108,9 +138,14 @@ impl FindLineTrait for FindLineMinimal {
             'd' => FileKind::DIRECTORY,
             '-' => FileKind::FILE,
             'l' => FileKind::LINK,
-            _ => unreachable!()
+            _ => unreachable!(),
         };
-        Ok(FindLineMinimal { inode, size, kind, full_path })
+        Ok(FindLineMinimal {
+            inode,
+            size,
+            kind,
+            full_path,
+        })
     }
 
     fn find_printf(extra_cmd: bool) -> String {
@@ -175,10 +210,13 @@ impl FindLineTrait for FindLineADB {
         let link_path = PathBuf::from(split_iter.next().expect("missing link to path"));
 
         let mut mod_time_split_iter = mod_time_str.split('.');
-        let mod_time_seconds = mod_time_split_iter.next().expect("missing seconds part in modification time").parse::<i64>()?;
+        let mod_time_seconds = mod_time_split_iter
+            .next()
+            .expect("missing seconds part in modification time")
+            .parse::<i64>()?;
         let mod_time_nanoseconds = match mod_time_split_iter.next() {
             Some(ns_chunk) => ns_chunk.parse::<u32>()?,
-            None => 0
+            None => 0,
         };
         let mod_time = DateTime::from_timestamp(mod_time_seconds, mod_time_nanoseconds).unwrap();
 
@@ -191,14 +229,29 @@ impl FindLineTrait for FindLineADB {
             'd' => FileKind::DIRECTORY,
             '-' => FileKind::FILE,
             'l' => FileKind::LINK,
-            _ => unreachable!()
+            _ => unreachable!(),
         };
         let link_path = if link_path.to_str().unwrap().len() != 0 || kind == FileKind::LINK {
             Some(link_path)
         } else {
             None
         };
-        Ok(FindLineADB { inode, size, kind, mode_num, mode_text, uid_num, uid_text, gid_num, gid_text, mod_time, sec_ctx, full_path, link_path: link_path, hash_val: hash_raw_str })
+        Ok(FindLineADB {
+            inode,
+            size,
+            kind,
+            mode_num,
+            mode_text,
+            uid_num,
+            uid_text,
+            gid_num,
+            gid_text,
+            mod_time,
+            sec_ctx,
+            full_path,
+            link_path: link_path,
+            hash_val: hash_raw_str,
+        })
     }
 
     fn find_printf(extra_cmd: bool) -> String {
@@ -241,6 +294,6 @@ pub fn filter_excludes(base_path: &Path, excludes: &HashSet<PathBuf>) -> HashSet
         if exclude_path.starts_with(base_path) {
             new_excludes.insert(exclude_path.clone());
         }
-    };
-    return new_excludes
+    }
+    return new_excludes;
 }

@@ -1,30 +1,48 @@
+use crate::find_utils::{filter_excludes, FindLineADB, FindLineMinimal, FindLineTrait};
+use crate::utils::{FileKind, HashAlg};
 use anyhow::Error as AnyHowError;
+use chrono::{DateTime, Utc};
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use std::collections::HashSet;
-use std::process::Stdio;
-use crate::utils::{HashAlg, FileKind};
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
-use std::path::{Path, PathBuf};
-use std::fmt::Debug;
-use crate::find_utils::{FindLineTrait, FindLineMinimal, FindLineADB, filter_excludes};
 
-pub async fn adb_quick_scanner(base_path: &Path, excludes: Option<HashSet<PathBuf>>, tx: mpsc::Sender<FindLineMinimal>) -> Result<(), AnyHowError> {
+pub async fn adb_quick_scanner(
+    base_path: &Path,
+    excludes: Option<HashSet<PathBuf>>,
+    tx: mpsc::Sender<FindLineMinimal>,
+) -> Result<(), AnyHowError> {
     match excludes {
-        Some(excludes) => adb_scanner_advanced::<FindLineMinimal>(base_path, None, excludes, &tx).await,
-        None => adb_scanner_core::<FindLineMinimal>(base_path, None, None, &tx).await
+        Some(excludes) => {
+            adb_scanner_advanced::<FindLineMinimal>(base_path, None, excludes, &tx).await
+        }
+        None => adb_scanner_core::<FindLineMinimal>(base_path, None, None, &tx).await,
     }
 }
 
-pub async fn adb_full_scanner(base_path: &Path, excludes: Option<HashSet<PathBuf>>, hash_alg: Option<HashAlg>, tx: mpsc::Sender<FindLineADB>) -> Result<(), AnyHowError> {
+pub async fn adb_full_scanner(
+    base_path: &Path,
+    excludes: Option<HashSet<PathBuf>>,
+    hash_alg: Option<HashAlg>,
+    tx: mpsc::Sender<FindLineADB>,
+) -> Result<(), AnyHowError> {
     match excludes {
-        Some(excludes) => adb_scanner_advanced::<FindLineADB>(base_path, hash_alg, excludes, &tx).await,
-        None => adb_scanner_core::<FindLineADB>(base_path, None, None, &tx).await
+        Some(excludes) => {
+            adb_scanner_advanced::<FindLineADB>(base_path, hash_alg, excludes, &tx).await
+        }
+        None => adb_scanner_core::<FindLineADB>(base_path, None, None, &tx).await,
     }
 }
 
-pub async fn adb_scanner_core<FindLineT: FindLineTrait>(base_path: &Path, hash_alg: Option<HashAlg>, max_depth: Option<i32>, tx: &mpsc::Sender<FindLineT>) -> Result<(), AnyHowError> {
+pub async fn adb_scanner_core<FindLineT: FindLineTrait>(
+    base_path: &Path,
+    hash_alg: Option<HashAlg>,
+    max_depth: Option<i32>,
+    tx: &mpsc::Sender<FindLineT>,
+) -> Result<(), AnyHowError> {
     let find_printf = FindLineT::find_printf(hash_alg.is_some());
     let mut max_depth_str: String;
 
@@ -66,7 +84,12 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait>(base_path: &Path, hash_a
     Ok(())
 }
 
-pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(base_path: &'a Path, hash_alg: Option<HashAlg>, excludes: HashSet<PathBuf>, tx: &mpsc::Sender<FindLineT>) -> Result<(), AnyHowError> {
+pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(
+    base_path: &'a Path,
+    hash_alg: Option<HashAlg>,
+    excludes: HashSet<PathBuf>,
+    tx: &mpsc::Sender<FindLineT>,
+) -> Result<(), AnyHowError> {
     let excludes = filter_excludes(base_path, &excludes);
     for exclude_path in &excludes {
         if exclude_path == base_path {
@@ -98,10 +121,16 @@ pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(b
             if flag {
                 let new_excludes = filter_excludes(new_base_path, &excludes);
                 // println!("calling adb_scanner2({:?}, {:?})", new_base_path, new_excludes);
-                Box::pin(adb_scanner_advanced(new_base_path, hash_alg, new_excludes, tx)).await?;
+                Box::pin(adb_scanner_advanced(
+                    new_base_path,
+                    hash_alg,
+                    new_excludes,
+                    tx,
+                ))
+                .await?;
             }
         }
-    };
+    }
     handle.await;
     Ok(())
 }

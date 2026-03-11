@@ -1,13 +1,13 @@
-use url::Url;
+use crate::AnyHowError;
 use regex::Regex;
 use std::path::PathBuf;
-use crate::AnyHowError;
+use url::Url;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum FileKind {
     FILE,
     DIRECTORY,
-    LINK
+    LINK,
 }
 
 impl FileKind {
@@ -42,7 +42,6 @@ impl HashAlg {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub enum UrlLike {

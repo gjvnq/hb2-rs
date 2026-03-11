@@ -1,18 +1,18 @@
-use tokio::sync::mpsc;
 use anyhow::Error as AnyHowError;
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap::{Parser, Subcommand};
-use std::sync::OnceLock;
-use std::collections::HashSet;
-use clap::{Command, Arg, ArgAction, ArgMatches};
-use url::Url;
 use regex::Regex;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use tokio::sync::mpsc;
+use url::Url;
 
-mod utils;
 mod adb_utils;
 mod find_utils;
+mod utils;
+use adb_utils::{adb_full_scanner, adb_quick_scanner};
 use utils::{HashAlg, UrlLike};
-use adb_utils::{adb_quick_scanner, adb_full_scanner};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -41,50 +41,68 @@ fn get_long_version() -> &'static String {
 async fn main() -> Result<(), AnyHowError> {
     let backup_cmd = Command::new("backup")
         .about("Backups files")
-        .arg(Arg::new("SOURCE")
-            .help("Path to backup. Use a scheme use adb:// or file:// to avoid ambiguities.")
-            .required(true)
-            .index(1))
-        .arg(Arg::new("name")
-            .help("Name of the backup. Defaults to the basename of SOURCE.")
-            .action(ArgAction::Set)
-            .long("name"))
-        .arg(Arg::new("description")
-            .help("Description of the backup.")
-            .action(ArgAction::Set)
-            .long("desc"))
-        .arg(Arg::new("STORAGE")
-            .help("Where to save the backups")
-            .required(true)
-            .index(2))
-        .arg(Arg::new("alg")
-            .default_value("SHA256")
-            .action(ArgAction::Set)
-            .long("alg")
-            .value_parser(["MD5", "SHA1", "SHA224", "SHA384", "SHA256", "SHA512"])
-            .help("Selects the hash algorithm"))
-        .arg(Arg::new("exclude")
-            .action(ArgAction::Append)
-            .long("exclude")
-            .help("Specifies a directory to skip while backing up"))
-        .arg(Arg::new("force-color")
-            .long("force-color")
-            .action(ArgAction::SetTrue)
-            .help("Forces the use of colours even when STDOUT is redirected"))
-        .arg(Arg::new("debug")
-            .long("debug")
-            .action(ArgAction::SetTrue)
-            .help("Prints additional debugging info"))
-        .arg(Arg::new("no-file-flags")
-            .long("no-file-flags")
-            .action(ArgAction::SetFalse)
-            .help("If present, hb2-rs won't even attempt to get the file flags"));
+        .arg(
+            Arg::new("SOURCE")
+                .help("Path to backup. Use a scheme use adb:// or file:// to avoid ambiguities.")
+                .required(true)
+                .index(1),
+        )
+        .arg(
+            Arg::new("name")
+                .help("Name of the backup. Defaults to the basename of SOURCE.")
+                .action(ArgAction::Set)
+                .long("name"),
+        )
+        .arg(
+            Arg::new("description")
+                .help("Description of the backup.")
+                .action(ArgAction::Set)
+                .long("desc"),
+        )
+        .arg(
+            Arg::new("STORAGE")
+                .help("Where to save the backups")
+                .required(true)
+                .index(2),
+        )
+        .arg(
+            Arg::new("alg")
+                .default_value("SHA256")
+                .action(ArgAction::Set)
+                .long("alg")
+                .value_parser(["MD5", "SHA1", "SHA224", "SHA384", "SHA256", "SHA512"])
+                .help("Selects the hash algorithm"),
+        )
+        .arg(
+            Arg::new("exclude")
+                .action(ArgAction::Append)
+                .long("exclude")
+                .help("Specifies a directory to skip while backing up"),
+        )
+        .arg(
+            Arg::new("force-color")
+                .long("force-color")
+                .action(ArgAction::SetTrue)
+                .help("Forces the use of colours even when STDOUT is redirected"),
+        )
+        .arg(
+            Arg::new("debug")
+                .long("debug")
+                .action(ArgAction::SetTrue)
+                .help("Prints additional debugging info"),
+        )
+        .arg(
+            Arg::new("no-file-flags")
+                .long("no-file-flags")
+                .action(ArgAction::SetFalse)
+                .help("If present, hb2-rs won't even attempt to get the file flags"),
+        );
 
     let verify_blobs_cmd = Command::new("verify-blobs")
         .about("Verifies the stores blobs to see if the file sizes and hashes make sense");
 
-    let import_log_cmd = Command::new("import-log")
-        .about("Imports a backup log file into the SQLITE db");
+    let import_log_cmd =
+        Command::new("import-log").about("Imports a backup log file into the SQLITE db");
 
     let main_cmd = Command::new("Hash Based Backup tool")
         .version(VERSION)
@@ -119,26 +137,32 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
     let file_flags = sub_matches.get_flag("no-file-flags");
     println!("file_flags={:?}", file_flags);
     let excludes = sub_matches
-    .get_many::<String>("exclude")
-    .unwrap_or_default()
-    .map(|v| PathBuf::from(v.as_str()))
-    .collect::<HashSet<_>>();
+        .get_many::<String>("exclude")
+        .unwrap_or_default()
+        .map(|v| PathBuf::from(v.as_str()))
+        .collect::<HashSet<_>>();
     println!("excludes={:?}", excludes);
 
     // database::open_by_dir(storage_path).expect("failed to open db");
 
     match source {
         UrlLike::ADB(source_path) => main_backup_adb(&source_path, &storage_path, excludes).await,
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
-async fn main_backup_adb(source: &Path, storage: &Path, excludes: HashSet<PathBuf>) -> Result<(), AnyHowError> {
+async fn main_backup_adb(
+    source: &Path,
+    storage: &Path,
+    excludes: HashSet<PathBuf>,
+) -> Result<(), AnyHowError> {
     // database::open_by_dir(storage_path).expect("failed to open db");
     let (tx1, mut rx1) = mpsc::channel(32);
     let source1 = source.to_path_buf();
     tokio::spawn(async move {
-        adb_quick_scanner(&source1, Some(excludes), tx1).await.unwrap();
+        adb_quick_scanner(&source1, Some(excludes), tx1)
+            .await
+            .unwrap();
     });
     // let (tx2, mut rx2) = mpsc::channel(32);
     // tokio::spawn(async move {
@@ -157,5 +181,4 @@ async fn main_backup_adb(source: &Path, storage: &Path, excludes: HashSet<PathBu
     // }
     // open_db_by_dir
     Ok(())
-
 }
