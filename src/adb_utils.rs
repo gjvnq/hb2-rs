@@ -37,7 +37,7 @@ pub async fn adb_full_scanner(
     }
 }
 
-pub async fn adb_scanner_core<FindLineT: FindLineTrait>(
+pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
     base_path: &Path,
     hash_alg: Option<HashAlg>,
     max_depth: Option<i32>,
@@ -75,7 +75,7 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait>(
     while let Some(line) = lines.next_line().await? {
         let adb_line = FindLineT::parse(&line);
         if let Ok(adb_line) = adb_line {
-            tx.send(adb_line).await;
+            tx.send(adb_line).await?;
         } else {
             println!("{}", line);
             println!("adb_line error: {:?}", adb_line.unwrap_err())
@@ -105,10 +105,10 @@ pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(
     let base_path2 = base_path.to_path_buf();
     let handle = tokio::spawn(async move {
         // println!("calling adb_scanner({:?}, 1)", base_path2);
-        adb_scanner_core::<FindLineT>(&base_path2, hash_alg, Some(1), &tx_local).await;
+        adb_scanner_core::<FindLineT>(&base_path2, hash_alg, Some(1), &tx_local).await
     });
     while let Some(find_line) = rx_local.recv().await {
-        tx.send(find_line.clone()).await;
+        tx.send(find_line.clone()).await?;
         let new_base_path = find_line.get_full_path();
         if find_line.get_kind() == FileKind::DIRECTORY && new_base_path != base_path {
             let mut flag = true;
@@ -131,6 +131,6 @@ pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(
             }
         }
     }
-    handle.await;
+    handle.await?;
     Ok(())
 }

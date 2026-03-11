@@ -1,18 +1,22 @@
 use anyhow::Error as AnyHowError;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use clap::{Parser, Subcommand};
-use regex::Regex;
+use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
-use url::Url;
 
 mod adb_utils;
+mod database;
 mod find_utils;
 mod utils;
 use adb_utils::{adb_full_scanner, adb_quick_scanner};
+use database::{new_backup_record, open_db_by_dir, save_new_file_info};
 use utils::{HashAlg, UrlLike};
+use crate::find_utils::FindLineCoreTrait;
+
+#[macro_use]
+extern crate log;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -143,20 +147,31 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
         .collect::<HashSet<_>>();
     println!("excludes={:?}", excludes);
 
-    // database::open_by_dir(storage_path).expect("failed to open db");
+    let conn = database::open_db_by_dir(&storage_path).expect("failed to open db");
 
     match source {
-        UrlLike::ADB(source_path) => main_backup_adb(&source_path, &storage_path, excludes).await,
+        UrlLike::ADB(source_path) => {
+            main_backup_adb(conn, &source_path, &storage_path, None, None, excludes).await
+        }
         _ => unreachable!(),
     }
 }
 
 async fn main_backup_adb(
+    conn: Connection,
     source: &Path,
     storage: &Path,
-    excludes: HashSet<PathBuf>,
+    name: Option<&str>,
+    description: Option<&str>,
+    mut excludes: HashSet<PathBuf>,
 ) -> Result<(), AnyHowError> {
-    // database::open_by_dir(storage_path).expect("failed to open db");
+    excludes.insert(PathBuf::from("/dev"));
+    excludes.insert(PathBuf::from("/proc"));
+    excludes.insert(PathBuf::from("/sys"));
+
+    let source_fancy = format!("adb://{}", source.to_str().unwrap());
+    let backup_uuid = new_backup_record(&conn, name, description, &source_fancy)?;
+
     let (tx1, mut rx1) = mpsc::channel(32);
     let source1 = source.to_path_buf();
     tokio::spawn(async move {
@@ -170,6 +185,7 @@ async fn main_backup_adb(
     // });
     while let Some(message) = rx1.recv().await {
         println!("GOT = {:?}", message);
+        save_new_file_info(&conn, &backup_uuid, None, &message.into_generic());
     }
     // let (tx3, mut rx3) = mpsc::channel(32);
     // let source2 = source.to_path_buf();

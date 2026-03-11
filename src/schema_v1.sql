@@ -8,10 +8,10 @@ CREATE TABLE `blobs` (
 
 CREATE TABLE `backups` (
     `uuid` TEXT PRIMARY KEY,
-    `name` TEXT NOT NULL,
-    `desc` TEXT NOT NULL,
+    `name` TEXT,
+    `description` TEXT,
     `source_dir` TEXT,
-    `total_size` INTEGER NOT NULL,
+    `total_size` INTEGER,
     `started_at` DATE NOT NULL,
     `finished_at` DATE
 );
@@ -33,9 +33,9 @@ CREATE TABLE `files` (
     `sec_ctx` TEXT,
     `lsattr` TEXT,
     `full_path` TEXT,
-    `target_path` TEXT, -- only used for links
+    `link_path` TEXT, -- only used for links
     `scanned_hash` BLOB, -- null on directories and links
-    `acquired_hash` BLOB, -- null on directories and links
+    `acquired_hash` BLOB -- null on directories and links
 );
 
 COMMIT;

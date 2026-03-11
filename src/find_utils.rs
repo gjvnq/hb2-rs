@@ -28,9 +28,10 @@ const FIND_PATH: &str = "%p";
 const FIND_LINK_TO: &str = "%l";
 const FIND_ASCII_NEW_LINE: &str = "\\\\n";
 
-pub trait FindLineCoreTrait: Debug + Sized + Send + Clone {
+pub trait FindLineCoreTrait: Debug + Sized + Send + Clone + Sync {
     fn get_full_path(&self) -> &Path;
     fn get_kind(&self) -> FileKind;
+    fn into_generic(&self) -> FindLineGeneric;
 }
 
 pub trait FindLineTrait: FindLineCoreTrait {
@@ -40,20 +41,20 @@ pub trait FindLineTrait: FindLineCoreTrait {
 
 #[derive(Debug, Clone)]
 pub struct FindLineGeneric {
-    inode: Option<u64>,
-    size: u64,
-    kind: FileKind,
-    mode_num: Option<u16>,
-    mode_text: Option<String>,
-    uid_num: Option<u64>,
-    uid_text: Option<String>,
-    gid_num: Option<u64>,
-    gid_text: Option<String>,
-    mod_time: Option<DateTime<Utc>>,
-    sec_ctx: Option<String>,
-    full_path: PathBuf,
-    link_path: Option<PathBuf>,
-    hash_val: Option<String>,
+    pub inode: Option<u64>,
+    pub size: u64,
+    pub kind: FileKind,
+    pub mode_num: Option<u16>,
+    pub mode_text: Option<String>,
+    pub uid_num: Option<u64>,
+    pub uid_text: Option<String>,
+    pub gid_num: Option<u64>,
+    pub gid_text: Option<String>,
+    pub mod_time: Option<DateTime<Utc>>,
+    pub sec_ctx: Option<String>,
+    pub full_path: PathBuf,
+    pub link_path: Option<PathBuf>,
+    pub hash_val: Option<String>,
 }
 
 impl FindLineCoreTrait for FindLineGeneric {
@@ -64,47 +65,9 @@ impl FindLineCoreTrait for FindLineGeneric {
     fn get_kind(&self) -> FileKind {
         self.kind
     }
-}
 
-impl From<FindLineMinimal> for FindLineGeneric {
-    fn from(src: FindLineMinimal) -> Self {
-        FindLineGeneric {
-            inode: Some(src.inode),
-            size: src.size,
-            kind: src.kind,
-            mode_num: None,
-            mode_text: None,
-            uid_num: None,
-            uid_text: None,
-            gid_num: None,
-            gid_text: None,
-            mod_time: None,
-            sec_ctx: None,
-            full_path: src.full_path,
-            link_path: None,
-            hash_val: None,
-        }
-    }
-}
-
-impl From<FindLineADB> for FindLineGeneric {
-    fn from(src: FindLineADB) -> Self {
-        FindLineGeneric {
-            inode: Some(src.inode),
-            size: src.size,
-            kind: src.kind,
-            mode_num: Some(src.mode_num),
-            mode_text: Some(src.mode_text),
-            uid_num: Some(src.uid_num),
-            uid_text: Some(src.uid_text),
-            gid_num: Some(src.gid_num),
-            gid_text: Some(src.gid_text),
-            mod_time: Some(src.mod_time),
-            sec_ctx: Some(src.sec_ctx),
-            full_path: src.full_path,
-            link_path: src.link_path,
-            hash_val: src.hash_val,
-        }
+    fn into_generic(&self) -> FindLineGeneric {
+        self.clone()
     }
 }
 
@@ -123,6 +86,25 @@ impl FindLineCoreTrait for FindLineMinimal {
 
     fn get_kind(&self) -> FileKind {
         self.kind
+    }
+
+    fn into_generic(&self) -> FindLineGeneric {
+        FindLineGeneric {
+            inode: Some(self.inode),
+            size: self.size,
+            kind: self.kind,
+            mode_num: None,
+            mode_text: None,
+            uid_num: None,
+            uid_text: None,
+            gid_num: None,
+            gid_text: None,
+            mod_time: None,
+            sec_ctx: None,
+            full_path: self.full_path.clone(),
+            link_path: None,
+            hash_val: None,
+        }
     }
 }
 
@@ -191,6 +173,25 @@ impl FindLineCoreTrait for FindLineADB {
 
     fn get_kind(&self) -> FileKind {
         self.kind
+    }
+
+    fn into_generic(&self) -> FindLineGeneric {
+        FindLineGeneric {
+            inode: Some(self.inode),
+            size: self.size,
+            kind: self.kind,
+            mode_num: Some(self.mode_num),
+            mode_text: Some(self.mode_text.clone()),
+            uid_num: Some(self.uid_num),
+            uid_text: Some(self.uid_text.clone()),
+            gid_num: Some(self.gid_num),
+            gid_text: Some(self.gid_text.clone()),
+            mod_time: Some(self.mod_time),
+            sec_ctx: Some(self.sec_ctx.clone()),
+            full_path: self.full_path.clone(),
+            link_path: self.link_path.clone(),
+            hash_val: self.hash_val.clone(),
+        }
     }
 }
 impl FindLineTrait for FindLineADB {
