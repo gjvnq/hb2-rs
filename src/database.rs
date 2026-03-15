@@ -93,7 +93,6 @@ pub fn save_file_record(
         file_rec.backup_uuid = Some(backup_uuid.to_string());
     }
     file_rec.parent_uuid = parent_uuid.map(|s| s.to_string());
-    // let find_utils.name = find_line.full_path.file_name().map_or(find_line.full_path.to_str(), |p| p.to_str()).unwrap();
 
     let utc_now: DateTime<Utc> = Utc::now();
     conn.execute(
@@ -118,6 +117,6 @@ pub fn save_file_record(
             file_rec.link_path.as_ref().map(|p| p.to_str()),
             file_rec.hash_val],
     )?;
-    println!("saved {:?}", file_rec);
+    debug!("saved {:?}", file_rec);
     return Ok(file_rec);
 }

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -63,11 +64,26 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
         cmd_parts.push("{}");
         cmd_parts.push("\\;");
     }
+    debug!("cmd_parts = {:?}", cmd_parts);
 
     let mut child = Command::new("adb")
         .args(cmd_parts)
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
+
+    let stderr = child.stderr.take().expect("Failed to open stderr");
+    tokio::spawn(async move {
+        let mut stderr_reader = BufReader::new(stderr);
+        let mut stderr_lines = stderr_reader.lines();
+        loop {
+            match stderr_lines.next_line().await {
+                Ok(Some(line)) => error!("{}", line),
+                Ok(None) => break,
+                Err(err) => error!("{}", err),
+            };
+        }
+    });
 
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let mut reader = BufReader::new(stdout);
@@ -77,8 +93,7 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
         if let Ok(adb_line) = adb_line {
             tx.send(adb_line).await?;
         } else {
-            println!("{}", line);
-            println!("adb_line error: {:?}", adb_line.unwrap_err())
+            error!("adb_line error: {:?} (line = {:?})", adb_line.unwrap_err(), line)
         }
     }
     Ok(())

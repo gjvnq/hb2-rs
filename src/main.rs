@@ -8,17 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
+#[macro_use]
+extern crate log;
+
 mod adb_utils;
 mod database;
 mod find_utils;
 mod utils;
+mod log_hack;
 use crate::find_utils::FindLineCoreTrait;
 use adb_utils::{adb_full_scanner, adb_quick_scanner};
 use database::{new_backup_record, open_db_by_dir, save_file_record};
 use utils::{HashAlg, UrlLike};
-
-#[macro_use]
-extern crate log;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -86,18 +87,6 @@ async fn main() -> Result<(), AnyHowError> {
                 .help("Specifies a directory to skip while backing up"),
         )
         .arg(
-            Arg::new("force-color")
-                .long("force-color")
-                .action(ArgAction::SetTrue)
-                .help("Forces the use of colours even when STDOUT is redirected"),
-        )
-        .arg(
-            Arg::new("debug")
-                .long("debug")
-                .action(ArgAction::SetTrue)
-                .help("Prints additional debugging info"),
-        )
-        .arg(
             Arg::new("no-file-flags")
                 .long("no-file-flags")
                 .action(ArgAction::SetFalse)
@@ -119,11 +108,28 @@ async fn main() -> Result<(), AnyHowError> {
         .subcommand_required(true)
         .arg_required_else_help(true)
         .after_help("Use HB2_LOG environment variable to control verbosity (options: ERROR, WARN, INFO, DEBUG, TRACE)")
+        .arg(
+            Arg::new("force-color")
+                .long("force-color")
+                .action(ArgAction::SetTrue)
+                .help("Forces the use of colours even when STDOUT is redirected"),
+        )
+        .arg(
+            Arg::new("debug")
+                .long("debug")
+                .action(ArgAction::SetTrue)
+                .help("Prints additional debugging info"),
+        )
         .subcommand(backup_cmd)
         .subcommand(verify_blobs_cmd)
         .subcommand(import_log_cmd);
 
     let matches = main_cmd.get_matches();
+
+    let force_color = matches.get_flag("force-color");
+    let debug = matches.get_flag("debug");
+    log_hack::start_logger(force_color, debug);
+    debug!("started log");
 
     match matches.subcommand() {
         Some(("backup", sub_matches)) => main_backup(sub_matches).await?,
@@ -134,20 +140,20 @@ async fn main() -> Result<(), AnyHowError> {
 }
 
 async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
-    println!("{:?}", sub_matches);
+    debug!("{:?}", sub_matches);
     let source_raw: &String = sub_matches.get_one("SOURCE").unwrap();
     let source = UrlLike::parse(source_raw)?;
-    println!("source={:?}", source);
+    debug!("source={:?}", source);
     let storage_path = PathBuf::from(sub_matches.get_one::<String>("STORAGE").unwrap());
-    println!("storage_path={:?}", storage_path);
+    debug!("storage_path={:?}", storage_path);
     let file_flags = sub_matches.get_flag("no-file-flags");
-    println!("file_flags={:?}", file_flags);
+    debug!("file_flags={:?}", file_flags);
     let excludes = sub_matches
         .get_many::<String>("exclude")
         .unwrap_or_default()
         .map(|v| PathBuf::from(v.as_str()))
         .collect::<HashSet<_>>();
-    println!("excludes={:?}", excludes);
+    debug!("excludes={:?}", excludes);
 
     let hash_alg_raw: &String = sub_matches.get_one("alg").unwrap();
     let hash_alg = HashAlg::from(hash_alg_raw);
@@ -200,12 +206,12 @@ async fn main_backup_adb(
     // });
     let mut uuid_map = HashMap::<PathBuf, String>::new();
     while let Some(message) = rx1.recv().await {
-        println!("GOT = {:?}", message);
         let mut file_record = message.to_file_record();
         if uuid_map.contains_key(&file_record.full_path) {
             // Make sure we don't try to save the same file twice
             continue;
         }
+        info!("{:?} {} {} {}", file_record.full_path, file_record.kind.to_char(), file_record.size, file_record.hash_val.as_ref().map_or("", |s| s));
         let parent_uuid = match file_record.full_path.parent().map(|p| uuid_map.get(p)) {
             Some(None) => None,
             Some(p) => p,
