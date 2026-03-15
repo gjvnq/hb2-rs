@@ -7,7 +7,7 @@ use tokio_rusqlite::{params, Connection, Error as SQLError, OpenFlags};
 use uuid::Uuid;
 
 pub async fn open_db_by_dir(dirpath: &Path) -> AnyHowResult<Connection> {
-    let filepath = dirpath.join("hb2-rs.dev.sqlite");
+    let filepath = dirpath.join("hb2-rs.sqlite");
     open_db_by_path(filepath.as_path()).await
 }
 
