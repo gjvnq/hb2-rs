@@ -303,28 +303,58 @@ async fn copy_files(
         }
 
         // 3. Save the found hash and size
-        file_record = replace_file_record(conn, file_record).await?;
+        file_record = match replace_file_record(conn, file_record.clone()).await {
+            Ok(v) => v,
+            Err(err) => {
+                error!(
+                    "failed replace_file_record: {:?} (file_record={:?})",
+                    err, file_record
+                );
+                continue;
+            }
+        };
 
         // 4. Save blob record
-        save_blob_record(conn, &acquired_hash, file_record.size).await?;
+        if let Err(err) = save_blob_record(conn, &acquired_hash, file_record.size).await {
+            error!(
+                "failed save_blob_record: {:?} (acquired_hash={:?}, size={})",
+                err, acquired_hash, file_record.size
+            );
+            continue;
+        }
 
         // 5. Move the file
         let dir_to_make = blob_parent_path(storage_path, &acquired_hash);
         let blob_path = blob_full_path(storage_path, &acquired_hash);
         debug!("making dir {:?}", dir_to_make);
-        fs::create_dir_all(dir_to_make)?;
+        if let Err(err) = fs::create_dir_all(&dir_to_make) {
+            error!("failed to create directory {:?}: {:?}", dir_to_make, err);
+            continue;
+        }
         if blob_path.is_file() {
             let stored_blob_size = i64::try_from(fs::metadata(&blob_path)?.len()).unwrap();
             if stored_blob_size != actual_file_size {
                 warn!("Inconsistent blob size for {}, expected {} but got {}. Blob will be overwritten", acquired_hash, actual_file_size, stored_blob_size);
             }
-            fs::remove_file(&blob_path)?;
+            if let Err(err) = fs::remove_file(&blob_path) {
+                error!("failed to remove file {:?}: {:?}", blob_path, err);
+                continue;
+            }
         }
         if blob_path.is_file() {
             // blob already stored, just delete tmp file
-            fs::remove_file(&tmp_path)?;
+            if let Err(err) = fs::remove_file(&tmp_path) {
+                error!("failed to remove file {:?}: {:?}", tmp_path, err);
+                continue;
+            }
         } else {
-            fs::rename(&tmp_path, &blob_path)?;
+            if let Err(err) = fs::rename(&tmp_path, &blob_path) {
+                error!(
+                    "failed to move file {:?} to {:?}: {:?}",
+                    tmp_path, blob_path, err
+                );
+                continue;
+            }
         }
         info!("stored blob {}", acquired_hash);
 
