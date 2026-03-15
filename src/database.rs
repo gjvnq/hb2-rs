@@ -1,10 +1,10 @@
-use crate::{AnyHowError, AnyHowResult, find_utils};
 use crate::utils::FileKind;
+use crate::{find_utils, AnyHowError, AnyHowResult};
 use chrono::{DateTime, Utc};
-use std::path::{Path, PathBuf};
-use rusqlite::{Connection, OpenFlags, Result as SQLResult};
-use uuid::Uuid;
 use rusqlite::params;
+use rusqlite::{Connection, OpenFlags, Result as SQLResult};
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 pub fn open_db_by_dir(dirpath: &Path) -> AnyHowResult<Connection> {
     let filepath = dirpath.join("hb2-rs.dev.sqlite");

@@ -39,7 +39,7 @@ impl HashAlg {
             "SHA384" => Some(HashAlg::SHA384),
             "SHA256" => Some(HashAlg::SHA256),
             "SHA512" => Some(HashAlg::SHA512),
-            _ => None
+            _ => None,
         }
     }
     pub fn shell_command(&self) -> &'static str {

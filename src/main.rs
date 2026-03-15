@@ -12,10 +12,10 @@ mod adb_utils;
 mod database;
 mod find_utils;
 mod utils;
+use crate::find_utils::FindLineCoreTrait;
 use adb_utils::{adb_full_scanner, adb_quick_scanner};
 use database::{new_backup_record, open_db_by_dir, save_file_record};
 use utils::{HashAlg, UrlLike};
-use crate::find_utils::FindLineCoreTrait;
 
 #[macro_use]
 extern crate log;
@@ -156,7 +156,16 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
 
     match source {
         UrlLike::ADB(source_path) => {
-            main_backup_adb(conn, &source_path, &storage_path, hash_alg, None, None, excludes).await
+            main_backup_adb(
+                conn,
+                &source_path,
+                &storage_path,
+                hash_alg,
+                None,
+                None,
+                excludes,
+            )
+            .await
         }
         _ => unreachable!(),
     }

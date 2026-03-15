@@ -1,5 +1,5 @@
+use crate::database::FileRecord;
 use crate::utils::{FileKind, HashAlg};
-use crate::database::{FileRecord};
 use anyhow::Error as AnyHowError;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -30,7 +30,11 @@ const FIND_LINK_TO: &str = "%l";
 const FIND_ASCII_NEW_LINE: &str = "\\\\n";
 
 fn extract_basename(full_path: &Path) -> String {
-    full_path.file_name().map_or(full_path.to_str(), |p| p.to_str()).unwrap().to_string()
+    full_path
+        .file_name()
+        .map_or(full_path.to_str(), |p| p.to_str())
+        .unwrap()
+        .to_string()
 }
 
 pub trait FindLineCoreTrait: Debug + Sized + Send + Clone + Sync {
