@@ -1,24 +1,24 @@
-use crate::find_utils::FindLineGeneric;
-use crate::AnyHowError;
+use crate::{AnyHowError, AnyHowResult, find_utils};
+use crate::utils::FileKind;
 use chrono::{DateTime, Utc};
+use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags, Result as SQLResult};
-use std::path::Path;
 use uuid::Uuid;
 use rusqlite::params;
 
-pub fn open_db_by_dir(dirpath: &Path) -> SQLResult<Connection> {
+pub fn open_db_by_dir(dirpath: &Path) -> AnyHowResult<Connection> {
     let filepath = dirpath.join("hb2-rs.dev.sqlite");
     open_db_by_path(filepath.as_path())
 }
 
-fn schema_upgrade_v1(conn: &Connection) -> SQLResult<()> {
+fn schema_upgrade_v1(conn: &Connection) -> AnyHowResult<()> {
     conn.execute_batch(include_str!("schema_v1.sql"))?;
     conn.pragma_update(None, "user_version", 1)?;
     info!("Upgraded schema to version 1");
     Ok(())
 }
 
-fn open_db_by_path(filepath: &Path) -> SQLResult<Connection> {
+fn open_db_by_path(filepath: &Path) -> AnyHowResult<Connection> {
     let filepath_str = filepath.to_str().expect("filepath should be valid UTF-8");
     debug!("Opening database at {}", filepath_str);
     let conn = Connection::open_with_flags(
@@ -57,21 +57,67 @@ pub fn new_backup_record(
     return Ok(backup_uuid_str);
 }
 
-pub fn save_new_file_info(
+#[derive(Debug, Clone)]
+pub struct FileRecord {
+    pub uuid: Option<String>,
+    pub backup_uuid: Option<String>,
+    pub parent_uuid: Option<String>,
+    pub inode: Option<i64>,
+    pub name: String,
+    pub size: i64,
+    pub kind: FileKind,
+    pub mode_num: Option<u16>,
+    pub mode_text: Option<String>,
+    pub uid_num: Option<i64>,
+    pub uid_text: Option<String>,
+    pub gid_num: Option<i64>,
+    pub gid_text: Option<String>,
+    pub mod_time: Option<DateTime<Utc>>,
+    pub sec_ctx: Option<String>,
+    pub full_path: PathBuf,
+    pub link_path: Option<PathBuf>,
+    pub hash_val: Option<String>,
+}
+
+pub fn save_file_record(
     conn: &Connection,
     backup_uuid: &str,
-    parent_uuid: Option<&str>,
-    find_line: &FindLineGeneric,
-) -> Result<String, AnyHowError> {
-    let file_uuid = Uuid::new_v4();
-    let file_uuid_str = file_uuid.hyphenated().to_string();
+    parent_uuid: Option<&String>,
+    mut file_rec: FileRecord,
+) -> Result<FileRecord, AnyHowError> {
+    if file_rec.uuid.is_none() {
+        file_rec.uuid = Some(Uuid::new_v4().hyphenated().to_string());
+    }
+    if file_rec.backup_uuid.is_none() {
+        file_rec.backup_uuid = Some(backup_uuid.to_string());
+    }
+    file_rec.parent_uuid = parent_uuid.map(|s| s.to_string());
+    // let find_utils.name = find_line.full_path.file_name().map_or(find_line.full_path.to_str(), |p| p.to_str()).unwrap();
+
     let utc_now: DateTime<Utc> = Utc::now();
-    println!("{:?}", find_line.full_path.file_name());
-    let base_name = find_line.full_path.file_name().map_or(find_line.full_path.to_str(), |p| p.to_str()).unwrap();
+    println!("{:?}", file_rec.full_path.file_name());
     conn.execute(
         "INSERT INTO files (uuid, backup_uuid, parent_uuid, inode, name, mode, size, kind, uid_num, gid_num, uid_str, gid_str, mod_time, sec_ctx, lsattr, full_path, link_path, scanned_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![&file_uuid_str, backup_uuid, parent_uuid, find_line.inode, base_name, find_line.mode_num, find_line.size, find_line.kind.to_char().to_string(), find_line.uid_num, find_line.gid_num, find_line.uid_text, find_line.gid_text, find_line.mod_time, find_line.sec_ctx, None::<String>, find_line.full_path.to_str(), find_line.link_path.as_ref().map(|p| p.to_str()), find_line.hash_val],
+        params![
+            file_rec.uuid.as_ref().unwrap(),
+            file_rec.backup_uuid.as_ref().unwrap(),
+            file_rec.parent_uuid,
+            file_rec.inode,
+            file_rec.name,
+            file_rec.mode_num,
+            file_rec.size,
+            file_rec.kind.to_char().to_string(),
+            file_rec.uid_num,
+            file_rec.gid_num,
+            file_rec.uid_text,
+            file_rec.gid_text,
+            file_rec.mod_time,
+            file_rec.sec_ctx,
+            None::<String>,
+            file_rec.full_path.to_str(),
+            file_rec.link_path.as_ref().map(|p| p.to_str()),
+            file_rec.hash_val],
     )?;
-    conn.cache_flush()?;
-    return Ok(file_uuid_str);
+    println!("saved {:?}", file_rec);
+    return Ok(file_rec);
 }

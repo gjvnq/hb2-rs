@@ -1,6 +1,8 @@
 use anyhow::Error as AnyHowError;
+use anyhow::Result as AnyHowResult;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -11,7 +13,7 @@ mod database;
 mod find_utils;
 mod utils;
 use adb_utils::{adb_full_scanner, adb_quick_scanner};
-use database::{new_backup_record, open_db_by_dir, save_new_file_info};
+use database::{new_backup_record, open_db_by_dir, save_file_record};
 use utils::{HashAlg, UrlLike};
 use crate::find_utils::FindLineCoreTrait;
 
@@ -183,9 +185,17 @@ async fn main_backup_adb(
     // tokio::spawn(async move {
     //     filter_find_lines(excludes, rx1, tx2).await;
     // });
+    let mut uuid_map = HashMap::<PathBuf, String>::new();
     while let Some(message) = rx1.recv().await {
         println!("GOT = {:?}", message);
-        save_new_file_info(&conn, &backup_uuid, None, &message.into_generic());
+        let mut file_record = message.to_file_record();
+        if uuid_map.contains_key(&file_record.full_path) {
+            // Make sure we don't try to save the same file twice
+            continue;
+        }
+        let parent_uuid = file_record.full_path.parent().map(|p| uuid_map.get(p).unwrap());
+        let file_record = save_file_record(&conn, &backup_uuid, parent_uuid, file_record)?;
+        uuid_map.insert(file_record.full_path, file_record.uuid.unwrap());
     }
     // let (tx3, mut rx3) = mpsc::channel(32);
     // let source2 = source.to_path_buf();

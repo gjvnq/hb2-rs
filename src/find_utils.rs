@@ -1,4 +1,5 @@
 use crate::utils::{FileKind, HashAlg};
+use crate::database::{FileRecord};
 use anyhow::Error as AnyHowError;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -28,10 +29,14 @@ const FIND_PATH: &str = "%p";
 const FIND_LINK_TO: &str = "%l";
 const FIND_ASCII_NEW_LINE: &str = "\\\\n";
 
+fn extract_basename(full_path: &Path) -> String {
+    full_path.file_name().map_or(full_path.to_str(), |p| p.to_str()).unwrap().to_string()
+}
+
 pub trait FindLineCoreTrait: Debug + Sized + Send + Clone + Sync {
     fn get_full_path(&self) -> &Path;
     fn get_kind(&self) -> FileKind;
-    fn into_generic(&self) -> FindLineGeneric;
+    fn to_file_record(&self) -> FileRecord;
 }
 
 pub trait FindLineTrait: FindLineCoreTrait {
@@ -40,41 +45,9 @@ pub trait FindLineTrait: FindLineCoreTrait {
 }
 
 #[derive(Debug, Clone)]
-pub struct FindLineGeneric {
-    pub inode: Option<u64>,
-    pub size: u64,
-    pub kind: FileKind,
-    pub mode_num: Option<u16>,
-    pub mode_text: Option<String>,
-    pub uid_num: Option<u64>,
-    pub uid_text: Option<String>,
-    pub gid_num: Option<u64>,
-    pub gid_text: Option<String>,
-    pub mod_time: Option<DateTime<Utc>>,
-    pub sec_ctx: Option<String>,
-    pub full_path: PathBuf,
-    pub link_path: Option<PathBuf>,
-    pub hash_val: Option<String>,
-}
-
-impl FindLineCoreTrait for FindLineGeneric {
-    fn get_full_path(&self) -> &Path {
-        &self.full_path
-    }
-
-    fn get_kind(&self) -> FileKind {
-        self.kind
-    }
-
-    fn into_generic(&self) -> FindLineGeneric {
-        self.clone()
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct FindLineMinimal {
-    inode: u64,
-    size: u64,
+    inode: i64,
+    size: i64,
     kind: FileKind,
     full_path: PathBuf,
 }
@@ -88,9 +61,13 @@ impl FindLineCoreTrait for FindLineMinimal {
         self.kind
     }
 
-    fn into_generic(&self) -> FindLineGeneric {
-        FindLineGeneric {
+    fn to_file_record(&self) -> FileRecord {
+        FileRecord {
+            uuid: None,
+            backup_uuid: None,
+            parent_uuid: None,
             inode: Some(self.inode),
+            name: extract_basename(&self.full_path),
             size: self.size,
             kind: self.kind,
             mode_num: None,
@@ -111,8 +88,8 @@ impl FindLineCoreTrait for FindLineMinimal {
 impl FindLineTrait for FindLineMinimal {
     fn parse(line: &str) -> Result<Self, AnyHowError> {
         let mut split_iter = line.split(ASCII_US);
-        let inode = (split_iter.next().expect("missing inode number")).parse::<u64>()?;
-        let size = (split_iter.next().expect("missing size")).parse::<u64>()?;
+        let inode = (split_iter.next().expect("missing inode number")).parse::<i64>()?;
+        let size = (split_iter.next().expect("missing size")).parse::<i64>()?;
         let mode_text = (split_iter.next().expect("missing mode text")).to_string();
         let full_path = PathBuf::from(split_iter.next().expect("missing file path"));
 
@@ -150,14 +127,14 @@ impl FindLineTrait for FindLineMinimal {
 
 #[derive(Debug, Clone)]
 pub struct FindLineADB {
-    inode: u64,
-    size: u64,
+    inode: i64,
+    size: i64,
     kind: FileKind,
     mode_num: u16,
     mode_text: String,
-    uid_num: u64,
+    uid_num: i64,
     uid_text: String,
-    gid_num: u64,
+    gid_num: i64,
     gid_text: String,
     mod_time: DateTime<Utc>,
     sec_ctx: String,
@@ -175,9 +152,13 @@ impl FindLineCoreTrait for FindLineADB {
         self.kind
     }
 
-    fn into_generic(&self) -> FindLineGeneric {
-        FindLineGeneric {
+    fn to_file_record(&self) -> FileRecord {
+        FileRecord {
+            uuid: None,
+            backup_uuid: None,
+            parent_uuid: None,
             inode: Some(self.inode),
+            name: extract_basename(&self.full_path),
             size: self.size,
             kind: self.kind,
             mode_num: Some(self.mode_num),
@@ -197,13 +178,13 @@ impl FindLineCoreTrait for FindLineADB {
 impl FindLineTrait for FindLineADB {
     fn parse(line: &str) -> Result<Self, AnyHowError> {
         let mut split_iter = line.split(ASCII_US);
-        let inode = (split_iter.next().expect("missing inode number")).parse::<u64>()?;
-        let size = (split_iter.next().expect("missing size")).parse::<u64>()?;
+        let inode = (split_iter.next().expect("missing inode number")).parse::<i64>()?;
+        let size = (split_iter.next().expect("missing size")).parse::<i64>()?;
         let mode_num = u16::from_str_radix(split_iter.next().expect("missing mode octal"), 8)?;
         let mode_text = (split_iter.next().expect("missing mode text")).to_string();
-        let uid_num = (split_iter.next().expect("missing user id")).parse::<u64>()?;
+        let uid_num = (split_iter.next().expect("missing user id")).parse::<i64>()?;
         let uid_text = (split_iter.next().expect("missing user name")).to_string();
-        let gid_num = (split_iter.next().expect("missing group id")).parse::<u64>()?;
+        let gid_num = (split_iter.next().expect("missing group id")).parse::<i64>()?;
         let gid_text = (split_iter.next().expect("missing group name")).to_string();
         let mod_time_str = split_iter.next().expect("missing modification time");
         let sec_ctx = (split_iter.next().expect("missing security context")).to_string();
