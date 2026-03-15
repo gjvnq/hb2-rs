@@ -1,6 +1,7 @@
 use crate::utils::FileKind;
 use crate::{AnyHowError, AnyHowResult};
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tokio_rusqlite::{params, Connection, Error as SQLError, OpenFlags};
 use uuid::Uuid;
@@ -90,7 +91,7 @@ pub async fn save_blob_record(
         .await?)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FileRecord {
     pub uuid: Option<String>,
     pub backup_uuid: Option<String>,

@@ -1,12 +1,18 @@
 use anyhow::Error as AnyHowError;
 use anyhow::Result as AnyHowResult;
+use chrono::Utc;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use core::hash;
+use serde_json::json;
+use serde_jsonlines::AsyncJsonLinesWriter;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use tokio::fs::File;
+use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_rusqlite::Connection;
@@ -165,9 +171,42 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
     let hash_alg_raw: &String = sub_matches.get_one("alg").unwrap();
     let hash_alg = HashAlg::from(hash_alg_raw).expect("invalid hash algorithm");
 
+    let name: Option<String> = sub_matches.get_one("name").map(|s: &String| s.to_string());
+    let description: Option<String> = sub_matches
+        .get_one("description")
+        .map(|s: &String| s.to_string());
+
     let conn = open_db_by_dir(&storage_path)
         .await
         .expect("failed to open db");
+
+    let utc_now = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let jsonl_filename = match name {
+        Some(ref name) => format!("{}-{}.jsonl", utc_now, &name),
+        None => format!("{}.txt", utc_now),
+    };
+    let jsonl_path = storage_path.join(&jsonl_filename);
+    debug!("Backup jsonl path: {:?}", jsonl_path);
+    let mut jsonl_fp = File::create(&jsonl_path).await?;
+    let json_header = json!({
+        "metadata": true,
+        "source": source_raw,
+        "hash_alg": hash_alg_raw,
+        "version": VERSION,
+        "build_semver": BUILD_SEMVER,
+        "build_at": BUILD_TIMESTAMP,
+        "git_semver": GIT_SEMVER,
+        "git_commit": GIT_SHA,
+        "git_date": GIT_COMMIT_TIMESTAMP,
+        "git_branch": GIT_BRANCH,
+        "rustc_channel": RUSTC_CHANNEL,
+        "rustc_semver": RUSTC_SEMVER,
+        "rustc_host": RUSTC_HOST_TRIPLE,
+        "rustc_llvm": RUSTC_LLVM_VERSION,
+        "rustc_commit":RUSTC_COMMIT_HASH
+    });
+    let json_header_str = json_header.to_string() + "\n";
+    jsonl_fp.write(json_header_str.as_bytes()).await?;
 
     match source {
         UrlLike::ADB(source_path) => {
@@ -176,8 +215,9 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
                 &source_path,
                 &storage_path,
                 hash_alg,
-                None,
-                None,
+                name,
+                description,
+                jsonl_fp,
                 excludes,
             )
             .await
@@ -193,6 +233,7 @@ async fn main_backup_adb(
     hash_alg: HashAlg,
     name: Option<String>,
     description: Option<String>,
+    mut jsonl_fp: File,
     mut excludes: HashSet<PathBuf>,
 ) -> Result<(), AnyHowError> {
     excludes.insert(PathBuf::from("/dev"));
@@ -215,7 +256,7 @@ async fn main_backup_adb(
     task_set.spawn(async move { save_file_records(&conn2, backup_uuid, rx1, tx2).await });
 
     let storage3 = storage.to_path_buf();
-    task_set.spawn(async move { copy_files(&conn, &storage3, hash_alg, rx2).await });
+    task_set.spawn(async move { copy_files(&conn, &storage3, hash_alg, jsonl_fp, rx2).await });
 
     while let Some(result) = task_set.join_next().await {
         match result {
@@ -233,10 +274,12 @@ async fn copy_files(
     conn: &Connection,
     storage_path: &Path,
     hash_alg: HashAlg,
+    mut jsonl_fp: File,
     mut rx: mpsc::Receiver<FileRecord>,
 ) -> AnyHowResult<()> {
     // , tx: mpsc::Sender<FileRecord>
     let tmp_path = storage_path.join("pulled_file");
+    let mut jsonl_writer = AsyncJsonLinesWriter::new(jsonl_fp);
     while let Some(mut file_record) = rx.recv().await {
         if file_record.kind != FileKind::FILE {
             continue;
@@ -284,7 +327,11 @@ async fn copy_files(
             fs::rename(&tmp_path, &blob_path)?;
         }
         info!("stored blob {}", acquired_hash);
+
+        // 6. Write to jsonl
+        jsonl_writer.write(&file_record).await?;
     }
+    jsonl_writer.flush().await?;
     Ok(())
 }
 

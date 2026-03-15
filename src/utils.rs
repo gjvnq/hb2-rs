@@ -1,7 +1,9 @@
 use crate::{AnyHowError, AnyHowResult};
 use anyhow::bail;
 use core::hash;
+use openssl::x509::store::File;
 use regex::Regex;
+use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -18,10 +20,27 @@ pub enum FileKind {
 impl FileKind {
     pub fn to_char(&self) -> char {
         match self {
-            FileKind::DIRECTORY => 'd',
-            FileKind::FILE => 'f',
-            FileKind::LINK => 'l',
+            FileKind::DIRECTORY => 'D',
+            FileKind::FILE => 'F',
+            FileKind::LINK => 'L',
         }
+    }
+
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            FileKind::DIRECTORY => "D",
+            FileKind::FILE => "F",
+            FileKind::LINK => "L",
+        }
+    }
+}
+
+impl Serialize for FileKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.to_str())
     }
 }
 
