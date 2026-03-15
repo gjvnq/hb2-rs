@@ -1,6 +1,11 @@
-use crate::AnyHowError;
+use crate::{AnyHowError, AnyHowResult};
+use anyhow::bail;
+use core::hash;
 use regex::Regex;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::process::Command;
 use url::Url;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -52,6 +57,57 @@ impl HashAlg {
             HashAlg::SHA512 => "sha512sum",
         }
     }
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            HashAlg::MD5 => "md5:",
+            HashAlg::SHA1 => "sha1:",
+            HashAlg::SHA224 => "sha224:",
+            HashAlg::SHA256 => "sha256:",
+            HashAlg::SHA384 => "sha384:",
+            HashAlg::SHA512 => "sha512:",
+        }
+    }
+    pub async fn hash_file(&self, file_path: &Path) -> AnyHowResult<String> {
+        let output = Command::new(self.shell_command())
+            .args([file_path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?;
+        if !output.status.success() {
+            error!(
+                "failed to hash file ({:?}): {:?}",
+                file_path,
+                String::from_utf8_lossy(&output.stderr).to_string()
+            );
+            bail!("failed to hash file");
+        }
+        let hash_val =
+            String::from_utf8(output.stdout.split(|&b| b == b' ').next().unwrap().to_vec())?;
+        Ok(format!("{}{}", self.prefix(), hash_val))
+    }
+}
+
+pub fn blob_path_maker(storage_path: &Path, hash_val: &str, full_path: bool) -> PathBuf {
+    let mut parts = hash_val.split(":");
+    let alg = PathBuf::from(parts.next().unwrap().to_ascii_uppercase());
+    let hash_part = parts.next().unwrap();
+    let first_two_bytes = hash_part.chars().take(2).collect::<String>();
+    let first_two_bytes = PathBuf::from(first_two_bytes);
+    let output = storage_path.join(alg).join(first_two_bytes);
+    if full_path {
+        output.join(Path::new(hash_part))
+    } else {
+        output
+    }
+}
+
+pub fn blob_parent_path(storage_path: &Path, hash_val: &str) -> PathBuf {
+    blob_path_maker(storage_path, hash_val, false)
+}
+
+pub fn blob_full_path(storage_path: &Path, hash_val: &str) -> PathBuf {
+    blob_path_maker(storage_path, hash_val, true)
 }
 
 #[derive(Debug)]

@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE TABLE `blobs` (
-    `hash` BLOB PRIMARY KEY,
+    `hash` TEXT PRIMARY KEY,
     `size` INTEGER,
     `added_at` DATE
 );
@@ -34,8 +34,8 @@ CREATE TABLE `files` (
     `lsattr` TEXT,
     `full_path` TEXT NOT NULL,
     `link_path` TEXT, -- only used for links
-    `scanned_hash` BLOB, -- null on directories and links
-    `acquired_hash` BLOB, -- null on directories and links
+    `scanned_hash` TEXT, -- null on directories and links
+    `acquired_hash` TEXT, -- null on directories and links
     CONSTRAINT uq_file UNIQUE (backup_uuid, full_path)
 );
 

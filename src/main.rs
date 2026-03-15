@@ -1,12 +1,15 @@
 use anyhow::Error as AnyHowError;
 use anyhow::Result as AnyHowResult;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use rusqlite::Connection;
+use core::hash;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
+use tokio_rusqlite::Connection;
 
 #[macro_use]
 extern crate log;
@@ -16,10 +19,14 @@ mod database;
 mod find_utils;
 mod log_hack;
 mod utils;
+use crate::database::FileRecord;
 use crate::find_utils::FindLineCoreTrait;
-use adb_utils::{adb_full_scanner, adb_quick_scanner};
-use database::{new_backup_record, open_db_by_dir, save_file_record};
-use utils::{HashAlg, UrlLike};
+use crate::utils::FileKind;
+use adb_utils::{adb_copy_file, adb_full_scanner, adb_quick_scanner};
+use database::{
+    insert_file_record, new_backup_record, open_db_by_dir, replace_file_record, save_blob_record,
+};
+use utils::{blob_full_path, blob_parent_path, HashAlg, UrlLike};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
@@ -156,9 +163,11 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
     debug!("excludes={:?}", excludes);
 
     let hash_alg_raw: &String = sub_matches.get_one("alg").unwrap();
-    let hash_alg = HashAlg::from(hash_alg_raw);
+    let hash_alg = HashAlg::from(hash_alg_raw).expect("invalid hash algorithm");
 
-    let conn = database::open_db_by_dir(&storage_path).expect("failed to open db");
+    let conn = open_db_by_dir(&storage_path)
+        .await
+        .expect("failed to open db");
 
     match source {
         UrlLike::ADB(source_path) => {
@@ -181,59 +190,135 @@ async fn main_backup_adb(
     conn: Connection,
     source: &Path,
     storage: &Path,
-    hash_alg: Option<HashAlg>,
-    name: Option<&str>,
-    description: Option<&str>,
+    hash_alg: HashAlg,
+    name: Option<String>,
+    description: Option<String>,
     mut excludes: HashSet<PathBuf>,
 ) -> Result<(), AnyHowError> {
     excludes.insert(PathBuf::from("/dev"));
     excludes.insert(PathBuf::from("/proc"));
     excludes.insert(PathBuf::from("/sys"));
+    let mut task_set = JoinSet::new();
 
     let source_fancy = format!("adb://{}", source.to_str().unwrap());
-    let backup_uuid = new_backup_record(&conn, name, description, &source_fancy)?;
+    let backup_uuid =
+        new_backup_record(&conn, name.clone(), description.clone(), source_fancy).await?;
 
     let (tx1, mut rx1) = mpsc::channel(32);
     let source1 = source.to_path_buf();
-    tokio::spawn(async move {
-        adb_full_scanner(&source1, Some(excludes), hash_alg, tx1)
-            .await
-            .unwrap();
-    });
-    // let (tx2, mut rx2) = mpsc::channel(32);
-    // tokio::spawn(async move {
-    //     filter_find_lines(excludes, rx1, tx2).await;
-    // });
+    task_set.spawn(
+        async move { adb_full_scanner(&source1, Some(excludes), Some(hash_alg), tx1).await },
+    );
+
+    let (tx2, mut rx2) = mpsc::channel(32);
+    let conn2 = conn.clone();
+    task_set.spawn(async move { save_file_records(&conn2, backup_uuid, rx1, tx2).await });
+
+    let storage3 = storage.to_path_buf();
+    task_set.spawn(async move { copy_files(&conn, &storage3, hash_alg, rx2).await });
+
+    while let Some(result) = task_set.join_next().await {
+        match result {
+            Ok(_) => {}
+            Err(e) => error!("Task error: {:?}", e),
+        }
+    }
+    info!("Backup done");
+
+    // open_db_by_dir
+    Ok(())
+}
+
+async fn copy_files(
+    conn: &Connection,
+    storage_path: &Path,
+    hash_alg: HashAlg,
+    mut rx: mpsc::Receiver<FileRecord>,
+) -> AnyHowResult<()> {
+    // , tx: mpsc::Sender<FileRecord>
+    let tmp_path = storage_path.join("pulled_file");
+    while let Some(mut file_record) = rx.recv().await {
+        if file_record.kind != FileKind::FILE {
+            continue;
+        }
+        // 1. Copy the file to a provisory location
+        let res = adb_copy_file(&file_record.full_path, &tmp_path).await;
+        if let Err(err) = res {
+            error!("failed to copy file {:?}: {:?}", file_record.full_path, err);
+            continue;
+        }
+        // 2. Hash the file and get file size again
+        let acquired_hash = hash_alg.hash_file(&tmp_path).await?;
+        file_record.acquired_hash = Some(acquired_hash.clone());
+        let actual_file_size = i64::try_from(fs::metadata(&tmp_path)?.len()).unwrap();
+        if file_record.size != actual_file_size {
+            warn!(
+                "File size inconsistency for {:?}, expected {} but got {}",
+                file_record.full_path, file_record.size, actual_file_size
+            );
+            file_record.size = actual_file_size;
+        }
+
+        // 3. Save the found hash and size
+        file_record = replace_file_record(conn, file_record).await?;
+
+        // 4. Save blob record
+        save_blob_record(conn, &acquired_hash, file_record.size).await?;
+
+        // 5. Move the file
+        let dir_to_make = blob_parent_path(storage_path, &acquired_hash);
+        let blob_path = blob_full_path(storage_path, &acquired_hash);
+        debug!("making dir {:?}", dir_to_make);
+        fs::create_dir_all(dir_to_make)?;
+        if blob_path.is_file() {
+            let stored_blob_size = i64::try_from(fs::metadata(&blob_path)?.len()).unwrap();
+            if stored_blob_size != actual_file_size {
+                warn!("Inconsistent blob size for {}, expected {} but got {}. Blob will be overwritten", acquired_hash, actual_file_size, stored_blob_size);
+            }
+            fs::remove_file(&blob_path)?;
+        }
+        if blob_path.is_file() {
+            // blob already stored, just delete tmp file
+            fs::remove_file(&tmp_path)?;
+        } else {
+            fs::rename(&tmp_path, &blob_path)?;
+        }
+        info!("stored blob {}", acquired_hash);
+    }
+    Ok(())
+}
+
+async fn save_file_records<T: FindLineCoreTrait>(
+    conn: &Connection,
+    backup_uuid: String,
+    mut rx: mpsc::Receiver<T>,
+    tx: mpsc::Sender<FileRecord>,
+) -> AnyHowResult<()> {
     let mut uuid_map = HashMap::<PathBuf, String>::new();
-    while let Some(message) = rx1.recv().await {
+    while let Some(message) = rx.recv().await {
         let mut file_record = message.to_file_record();
         if uuid_map.contains_key(&file_record.full_path) {
             // Make sure we don't try to save the same file twice
             continue;
         }
         info!(
-            "{:?} {} {} {}",
+            "scanned file {:?} {} {} {}",
             file_record.full_path,
             file_record.kind.to_char(),
             file_record.size,
-            file_record.hash_val.as_ref().map_or("", |s| s)
+            file_record.scanned_hash.as_ref().map_or("", |s| s)
         );
         let parent_uuid = match file_record.full_path.parent().map(|p| uuid_map.get(p)) {
             Some(None) => None,
             Some(p) => p,
             None => None,
         };
-        let file_record = save_file_record(&conn, &backup_uuid, parent_uuid, file_record)?;
-        uuid_map.insert(file_record.full_path, file_record.uuid.unwrap());
+        file_record = insert_file_record(&conn, &backup_uuid, parent_uuid, file_record).await?;
+        uuid_map.insert(
+            file_record.full_path.clone(),
+            file_record.uuid.clone().unwrap(),
+        );
+        tx.send(file_record).await?;
     }
-    // let (tx3, mut rx3) = mpsc::channel(32);
-    // let source2 = source.to_path_buf();
-    // tokio::spawn(async move {
-    //     adb_full_scanner(&source2, tx3, Some(HashAlg::SHA256)).await.unwrap();
-    // });
-    // while let Some(message) = rx3.recv().await {
-    //     println!("GOT = {:?}", message);
-    // }
-    // open_db_by_dir
     Ok(())
 }

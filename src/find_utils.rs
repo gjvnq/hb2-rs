@@ -1,14 +1,10 @@
 use crate::database::FileRecord;
-use crate::utils::{FileKind, HashAlg};
+use crate::utils::FileKind;
 use anyhow::Error as AnyHowError;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::mpsc;
 
 const ASCII_US: char = '\x1F';
 const ASCII_US_BYTE: u8 = b'\x1F';
@@ -44,7 +40,7 @@ pub trait FindLineCoreTrait: Debug + Sized + Send + Clone + Sync {
 }
 
 pub trait FindLineTrait: FindLineCoreTrait {
-    fn parse(line: &str) -> Result<Self, AnyHowError>;
+    fn parse(line: &str, hash_alg_prefix: &str) -> Result<Self, AnyHowError>;
     fn find_printf(extra_cmd: bool) -> String;
 }
 
@@ -85,13 +81,14 @@ impl FindLineCoreTrait for FindLineMinimal {
             lsattr: None,
             full_path: self.full_path.clone(),
             link_path: None,
-            hash_val: None,
+            scanned_hash: None,
+            acquired_hash: None,
         }
     }
 }
 
 impl FindLineTrait for FindLineMinimal {
-    fn parse(line: &str) -> Result<Self, AnyHowError> {
+    fn parse(line: &str, _hash_alg_prefix: &str) -> Result<Self, AnyHowError> {
         let mut split_iter = line.split(ASCII_US);
         let inode = (split_iter.next().expect("missing inode number")).parse::<i64>()?;
         let size = (split_iter.next().expect("missing size")).parse::<i64>()?;
@@ -177,12 +174,13 @@ impl FindLineCoreTrait for FindLineADB {
             lsattr: None,
             full_path: self.full_path.clone(),
             link_path: self.link_path.clone(),
-            hash_val: self.hash_val.clone(),
+            scanned_hash: self.hash_val.clone(),
+            acquired_hash: None,
         }
     }
 }
 impl FindLineTrait for FindLineADB {
-    fn parse(line: &str) -> Result<Self, AnyHowError> {
+    fn parse(line: &str, hash_alg_prefix: &str) -> Result<Self, AnyHowError> {
         let mut split_iter = line.split(ASCII_US);
         let inode = (split_iter.next().expect("missing inode number")).parse::<i64>()?;
         let size = (split_iter.next().expect("missing size")).parse::<i64>()?;
@@ -212,6 +210,7 @@ impl FindLineTrait for FindLineADB {
             Some(v) => Some(v.split(" ").next().unwrap().to_string()),
             None => None,
         };
+        let hash_val = hash_raw_str.map(|val| format!("{}{}", hash_alg_prefix, val));
 
         let kind = match mode_text.chars().next().unwrap() {
             'd' => FileKind::DIRECTORY,
@@ -238,7 +237,7 @@ impl FindLineTrait for FindLineADB {
             sec_ctx,
             full_path,
             link_path: link_path,
-            hash_val: hash_raw_str,
+            hash_val: hash_val,
         })
     }
 

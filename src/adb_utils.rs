@@ -1,9 +1,10 @@
 use crate::find_utils::{filter_excludes, FindLineADB, FindLineMinimal, FindLineTrait};
 use crate::utils::{FileKind, HashAlg};
+use anyhow::bail;
 use anyhow::Error as AnyHowError;
-use chrono::{DateTime, Utc};
 use std::collections::HashSet;
-use std::fmt::Debug;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -45,7 +46,7 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
     tx: &mpsc::Sender<FindLineT>,
 ) -> Result<(), AnyHowError> {
     let find_printf = FindLineT::find_printf(hash_alg.is_some());
-    let mut max_depth_str: String;
+    let max_depth_str: String;
 
     let mut cmd_parts = Vec::from(["shell", "find", "-H", base_path.to_str().unwrap()]);
 
@@ -74,7 +75,7 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
 
     let stderr = child.stderr.take().expect("Failed to open stderr");
     tokio::spawn(async move {
-        let mut stderr_reader = BufReader::new(stderr);
+        let stderr_reader = BufReader::new(stderr);
         let mut stderr_lines = stderr_reader.lines();
         loop {
             match stderr_lines.next_line().await {
@@ -85,11 +86,15 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
         }
     });
 
+    let hash_alg_prefix = match hash_alg {
+        Some(hash_alg) => hash_alg.prefix(),
+        None => "",
+    };
     let stdout = child.stdout.take().expect("Failed to open stdout");
-    let mut reader = BufReader::new(stdout);
+    let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     while let Some(line) = lines.next_line().await? {
-        let adb_line = FindLineT::parse(&line);
+        let adb_line = FindLineT::parse(&line, hash_alg_prefix);
         if let Ok(adb_line) = adb_line {
             tx.send(adb_line).await?;
         } else {
@@ -151,5 +156,42 @@ pub async fn adb_scanner_advanced<'a, FindLineT: FindLineTrait + 'a + 'static>(
         }
     }
     handle.await?;
+    Ok(())
+}
+
+pub async fn adb_copy_file(source_path: &Path, target_path: &Path) -> Result<(), AnyHowError> {
+    match fs::remove_file(target_path) {
+        Ok(()) => {}
+        Err(e) => {
+            if e.kind() != ErrorKind::NotFound {
+                error!("Failed to remove file: {:?}: {:?}", target_path, e);
+                return Err(e.into());
+            }
+        }
+    };
+
+    let cmd_parts = Vec::from([
+        "pull",
+        source_path.to_str().unwrap(),
+        target_path.to_str().unwrap(),
+    ]);
+
+    debug!("cmd_parts = {:?}", cmd_parts);
+
+    let output = Command::new("adb")
+        .args(cmd_parts)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        error!(
+            "failed to adb pull: {:?}",
+            String::from_utf8_lossy(&output.stderr).to_string()
+        );
+        bail!("failed to adb pull");
+    }
+
     Ok(())
 }
