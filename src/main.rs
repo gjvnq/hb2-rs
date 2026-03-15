@@ -14,8 +14,8 @@ extern crate log;
 mod adb_utils;
 mod database;
 mod find_utils;
-mod utils;
 mod log_hack;
+mod utils;
 use crate::find_utils::FindLineCoreTrait;
 use adb_utils::{adb_full_scanner, adb_quick_scanner};
 use database::{new_backup_record, open_db_by_dir, save_file_record};
@@ -211,7 +211,13 @@ async fn main_backup_adb(
             // Make sure we don't try to save the same file twice
             continue;
         }
-        info!("{:?} {} {} {}", file_record.full_path, file_record.kind.to_char(), file_record.size, file_record.hash_val.as_ref().map_or("", |s| s));
+        info!(
+            "{:?} {} {} {}",
+            file_record.full_path,
+            file_record.kind.to_char(),
+            file_record.size,
+            file_record.hash_val.as_ref().map_or("", |s| s)
+        );
         let parent_uuid = match file_record.full_path.parent().map(|p| uuid_map.get(p)) {
             Some(None) => None,
             Some(p) => p,

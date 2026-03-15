@@ -93,7 +93,11 @@ pub async fn adb_scanner_core<FindLineT: FindLineTrait + 'static>(
         if let Ok(adb_line) = adb_line {
             tx.send(adb_line).await?;
         } else {
-            error!("adb_line error: {:?} (line = {:?})", adb_line.unwrap_err(), line)
+            error!(
+                "adb_line error: {:?} (line = {:?})",
+                adb_line.unwrap_err(),
+                line
+            )
         }
     }
     Ok(())
