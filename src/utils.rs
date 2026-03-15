@@ -31,6 +31,17 @@ pub enum HashAlg {
 }
 
 impl HashAlg {
+    pub fn from(val: &str) -> Option<Self> {
+        match val {
+            "MD5" => Some(HashAlg::MD5),
+            "SHA1" => Some(HashAlg::SHA1),
+            "SHA224" => Some(HashAlg::SHA224),
+            "SHA384" => Some(HashAlg::SHA384),
+            "SHA256" => Some(HashAlg::SHA256),
+            "SHA512" => Some(HashAlg::SHA512),
+            _ => None
+        }
+    }
     pub fn shell_command(&self) -> &'static str {
         match self {
             HashAlg::MD5 => "md5sum",

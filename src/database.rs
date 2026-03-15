@@ -74,6 +74,7 @@ pub struct FileRecord {
     pub gid_text: Option<String>,
     pub mod_time: Option<DateTime<Utc>>,
     pub sec_ctx: Option<String>,
+    pub lsattr: Option<String>,
     pub full_path: PathBuf,
     pub link_path: Option<PathBuf>,
     pub hash_val: Option<String>,
@@ -95,7 +96,6 @@ pub fn save_file_record(
     // let find_utils.name = find_line.full_path.file_name().map_or(find_line.full_path.to_str(), |p| p.to_str()).unwrap();
 
     let utc_now: DateTime<Utc> = Utc::now();
-    println!("{:?}", file_rec.full_path.file_name());
     conn.execute(
         "INSERT INTO files (uuid, backup_uuid, parent_uuid, inode, name, mode, size, kind, uid_num, gid_num, uid_str, gid_str, mod_time, sec_ctx, lsattr, full_path, link_path, scanned_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
@@ -113,7 +113,7 @@ pub fn save_file_record(
             file_rec.gid_text,
             file_rec.mod_time,
             file_rec.sec_ctx,
-            None::<String>,
+            file_rec.lsattr,
             file_rec.full_path.to_str(),
             file_rec.link_path.as_ref().map(|p| p.to_str()),
             file_rec.hash_val],

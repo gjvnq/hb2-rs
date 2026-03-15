@@ -149,11 +149,14 @@ async fn main_backup(sub_matches: &ArgMatches) -> Result<(), AnyHowError> {
         .collect::<HashSet<_>>();
     println!("excludes={:?}", excludes);
 
+    let hash_alg_raw: &String = sub_matches.get_one("alg").unwrap();
+    let hash_alg = HashAlg::from(hash_alg_raw);
+
     let conn = database::open_db_by_dir(&storage_path).expect("failed to open db");
 
     match source {
         UrlLike::ADB(source_path) => {
-            main_backup_adb(conn, &source_path, &storage_path, None, None, excludes).await
+            main_backup_adb(conn, &source_path, &storage_path, hash_alg, None, None, excludes).await
         }
         _ => unreachable!(),
     }
@@ -163,6 +166,7 @@ async fn main_backup_adb(
     conn: Connection,
     source: &Path,
     storage: &Path,
+    hash_alg: Option<HashAlg>,
     name: Option<&str>,
     description: Option<&str>,
     mut excludes: HashSet<PathBuf>,
@@ -177,7 +181,7 @@ async fn main_backup_adb(
     let (tx1, mut rx1) = mpsc::channel(32);
     let source1 = source.to_path_buf();
     tokio::spawn(async move {
-        adb_quick_scanner(&source1, Some(excludes), tx1)
+        adb_full_scanner(&source1, Some(excludes), hash_alg, tx1)
             .await
             .unwrap();
     });
@@ -193,7 +197,11 @@ async fn main_backup_adb(
             // Make sure we don't try to save the same file twice
             continue;
         }
-        let parent_uuid = file_record.full_path.parent().map(|p| uuid_map.get(p).unwrap());
+        let parent_uuid = match file_record.full_path.parent().map(|p| uuid_map.get(p)) {
+            Some(None) => None,
+            Some(p) => p,
+            None => None,
+        };
         let file_record = save_file_record(&conn, &backup_uuid, parent_uuid, file_record)?;
         uuid_map.insert(file_record.full_path, file_record.uuid.unwrap());
     }
