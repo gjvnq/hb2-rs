@@ -72,6 +72,21 @@ pub struct BlobRecord {
     pub added_at: DateTime<Utc>,
 }
 
+pub async fn is_blob_saved(conn: &Connection, hash_val: &str) -> AnyHowResult<bool> {
+    let hash_val = hash_val.to_string();
+    Ok(conn
+        .call(move |conn| {
+            let utc_now: DateTime<Utc> = Utc::now();
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM blobs WHERE hash = ?",
+                params![hash_val],
+                |row| row.get(0),
+            )?;
+            Ok::<_, SQLError>(n != 0)
+        })
+        .await?)
+}
+
 pub async fn save_blob_record(
     conn: &Connection,
     hash_val: &str,

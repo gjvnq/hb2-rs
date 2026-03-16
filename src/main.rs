@@ -30,7 +30,8 @@ use crate::find_utils::FindLineCoreTrait;
 use crate::utils::FileKind;
 use adb_utils::{adb_copy_file, adb_full_scanner, adb_quick_scanner};
 use database::{
-    insert_file_record, new_backup_record, open_db_by_dir, replace_file_record, save_blob_record,
+    insert_file_record, is_blob_saved, new_backup_record, open_db_by_dir, replace_file_record,
+    save_blob_record,
 };
 use utils::{blob_full_path, blob_parent_path, HashAlg, UrlLike};
 
@@ -284,6 +285,23 @@ async fn copy_files(
         if file_record.kind != FileKind::FILE {
             continue;
         }
+        // 0. Check if the file is already saved as a blob
+        let scanned_hash = file_record.scanned_hash.clone().unwrap();
+        match is_blob_saved(conn, &scanned_hash).await {
+            Ok(true) => {
+                debug!(
+                    "skipping {:?} because blob {} is already saved",
+                    file_record.full_path, scanned_hash
+                );
+                continue;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                error!("{:?}", err);
+                continue;
+            }
+        };
+
         // 1. Copy the file to a provisory location
         let res = adb_copy_file(&file_record.full_path, &tmp_path).await;
         if let Err(err) = res {
